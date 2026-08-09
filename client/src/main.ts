@@ -4,6 +4,7 @@ import { StartScene } from './scenes/StartScene';
 import { LobbyScene } from './scenes/LobbyScene';
 import { MatchupScene } from './scenes/MatchupScene';
 import { BowlingScene } from './scenes/BowlingScene';
+import { LiveSpectatorScene } from './scenes/LiveSpectatorScene';
 import { MatchResultScene } from './scenes/MatchResultScene';
 import { FinalResultsScene } from './scenes/FinalResultsScene';
 
@@ -18,7 +19,7 @@ const game = new Phaser.Game({
     height: window.innerHeight
   },
   render: { antialias: true, roundPixels: true },
-  scene: [StartScene, LobbyScene, MatchupScene, BowlingScene, MatchResultScene, FinalResultsScene]
+  scene: [StartScene, LobbyScene, MatchupScene, BowlingScene, LiveSpectatorScene, MatchResultScene, FinalResultsScene]
 });
 
 window.addEventListener('turkey-bowling-sound-change', (event) => {

@@ -1,11 +1,12 @@
 import type { FinalResultsState, GameLevel, RoomState, RoundResultState, ServerMessage, SpectatorShot, SpectatorShotResult, TournamentState } from '../types';
 
 type MatchStarted = Extract<ServerMessage, { type: 'match_started' }>;
+type RoomJoined = Extract<ServerMessage, { type: 'room_joined' }>;
 
 type EventMap = {
   open: void;
   close: void;
-  roomJoined: { playerId: string; room: RoomState };
+  roomJoined: Omit<RoomJoined, 'type'>;
   roomState: RoomState;
   matchStarted: MatchStarted;
   bowlingStarted: TournamentState;
@@ -110,6 +111,8 @@ class NetworkManager {
   shotStarted(shot: Omit<SpectatorShot, 'matchId' | 'playerId' | 'playerName' | 'standingPins'>): void { this.send({ type: 'shot_started', shot }); }
   rollBall(knockedPins: number[], speedKmh: number, gutter: boolean): void { this.send({ type: 'roll_ball', knockedPins, speedKmh, gutter }); }
   submitScore(frameIndex: number, total: number): void { this.send({ type: 'submit_score', frameIndex, total }); }
+  watchMatch(matchId: string): void { this.send({ type: 'watch_match', matchId }); }
+  stopWatchingMatch(): void { this.send({ type: 'stop_watching_match' }); }
   devFinishRound(): void { this.send({ type: 'dev_finish_round' }); }
 
   on<K extends keyof EventMap>(event: K, listener: Listener<K>): () => void {
@@ -131,7 +134,7 @@ class NetworkManager {
     let message: ServerMessage;
     try { message = JSON.parse(raw) as ServerMessage; } catch { return; }
     switch (message.type) {
-      case 'room_joined': this.emit('roomJoined', { playerId: message.playerId, room: message.room }); break;
+      case 'room_joined': { const { type: _type, ...payload } = message; this.emit('roomJoined', payload); break; }
       case 'room_state': this.emit('roomState', message.room); break;
       case 'match_started': this.emit('matchStarted', message); break;
       case 'bowling_started': this.emit('bowlingStarted', toTournamentState(message)); break;

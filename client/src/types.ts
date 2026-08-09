@@ -119,9 +119,9 @@ export interface FinalResultsState {
 
 export type ServerMessage =
   | { type: 'hello' }
-  | { type: 'room_joined'; playerId: string; room: RoomState }
+  | { type: 'room_joined'; playerId: string; room: RoomState; matchups?: LaneMatchup[]; phaseEndsAt?: number | null; tournament?: TournamentState; roundResult?: RoundResultState }
   | { type: 'room_state'; room: RoomState }
-  | { type: 'match_started'; room: RoomState; round: number; totalRounds: number; phaseEndsAt: number; matchups: LaneMatchup[] }
+  | { type: 'match_started'; room: RoomState; round: number; totalRounds: number; phaseEndsAt: number | null; matchups: LaneMatchup[] }
   | ({ type: 'bowling_started' | 'bowling_state' } & TournamentState)
   | ({ type: 'round_complete' } & RoundResultState)
   | ({ type: 'final_results' } & FinalResultsState)

@@ -28,6 +28,11 @@ export class MatchResultScene extends BaseBowlingScene {
         appState.roundResult = null;
         this.scene.start('LobbyScene');
       }),
+      network.on('bowlingState', (state) => {
+        appState.room = state.room;
+        appState.tournament = state;
+        this.render(state, appState.roundResult);
+      }),
       network.on('roundComplete', (result) => {
         appState.room = result.room;
         appState.tournament = result;
@@ -69,6 +74,7 @@ export class MatchResultScene extends BaseBowlingScene {
     const movementText = movement ? laneMovementText(movement.oldLane, movement.newLane, match.championship) : '';
     const me = state.room.players.find((p) => p.id === appState.playerId);
     const isHost = Boolean(me?.isHost);
+    const liveMatchesRemaining = waiting ? state.matches.filter((candidate) => !candidate.complete && Boolean(candidate.playerB)).length : 0;
     const mineRaw = mine?.rawTotal ?? mine?.total ?? 0;
     const mineFinal = mine?.finalScore ?? mineRaw;
     const theirsRaw = theirs?.rawTotal ?? theirs?.total ?? 0;
@@ -91,7 +97,7 @@ export class MatchResultScene extends BaseBowlingScene {
             ${waiting ? '<strong>Final score locked</strong><small>Waiting for the other lanes to finish…</small>' : `<div class="result-countdown"><span>NEXT MATCHUPS IN</span><strong>${seconds}</strong><small>seconds</small></div><strong>${movementText}</strong>`}
           </div>
           <div class="result-record">Wins leaderboard score: <strong>${me?.wins ?? 0}</strong> • Each match win adds 1 point.</div>
-          ${isHost ? '<div class="result-host-actions"><button id="result-matchups" class="secondary-btn result-nav-btn" type="button">VIEW CLASS MATCHUPS</button><button id="result-return-lobby" class="danger-btn result-nav-btn" type="button">↩ RETURN TO LOBBY</button></div>' : ''}
+          ${(waiting && liveMatchesRemaining > 0) || isHost ? `<div class="result-host-actions">${waiting && liveMatchesRemaining > 0 ? `<button id="result-matchups" class="secondary-btn result-nav-btn live-watch-result-btn" type="button">👁 WATCH LIVE MATCHES (${liveMatchesRemaining})</button>` : ''}${isHost ? '<button id="result-return-lobby" class="danger-btn result-nav-btn" type="button">↩ RETURN TO LOBBY</button>' : ''}</div>` : ''}
         </section>
       </div>`;
 

@@ -107,11 +107,16 @@ export class StartScene extends BaseBowlingScene {
           });
         }, 400);
       }),
-      network.on('roomJoined', ({ playerId, room }) => {
+      network.on('roomJoined', ({ playerId, room, matchups, phaseEndsAt, tournament, roundResult }) => {
         appState.playerId = playerId;
         appState.playerName = nameInput.value.trim().replace(/\s+/g, ' ');
         appState.room = room;
-        this.scene.start('LobbyScene');
+        appState.matchups = matchups ?? [];
+        appState.matchupEndsAt = phaseEndsAt ?? null;
+        appState.tournament = tournament ?? null;
+        appState.roundResult = roundResult ?? null;
+        appState.spectatingMatchId = null;
+        this.scene.start(room.status === 'lobby' ? 'LobbyScene' : 'MatchupScene');
       }),
       network.on('error', ({ message }) => {
         setReady(network.isConnected);

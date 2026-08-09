@@ -27,6 +27,8 @@ type ClientMessage =
   | { type: 'shot_started'; shot: ShotVisualInput }
   | { type: 'roll_ball'; knockedPins?: number[]; speedKmh?: number; gutter?: boolean }
   | { type: 'submit_score'; frameIndex: number; total: number }
+  | { type: 'watch_match'; matchId: string }
+  | { type: 'stop_watching_match' }
   | { type: 'dev_finish_round' };
 
 interface Player {
@@ -41,6 +43,7 @@ interface Player {
   ladderRank: number;
   wins: number;
   losses: number;
+  watchingMatchId: string | null;
 }
 
 interface BowlerGame {
@@ -161,6 +164,8 @@ wss.on('connection', (socket) => {
       case 'shot_started': shotStarted(socket, message.shot); break;
       case 'roll_ball': rollBall(socket, message.knockedPins, message.speedKmh, message.gutter); break;
       case 'submit_score': submitScore(socket, message.frameIndex, message.total); break;
+      case 'watch_match': watchMatch(socket, message.matchId); break;
+      case 'stop_watching_match': stopWatchingMatch(socket); break;
       case 'dev_finish_round': devFinishRound(socket); break;
     }
   });
@@ -198,7 +203,7 @@ function createRoom(socket: WebSocket, rawName: string, deviceId: string, rawLev
   };
   rooms.set(code, room);
   membership.set(socket, { roomCode: code, playerId: player.id });
-  send(socket, { type: 'room_joined', playerId: player.id, room: publicRoom(room) });
+  send(socket, roomJoinedPayload(room, player.id));
 }
 
 function joinRoom(socket: WebSocket, rawName: string, deviceId: string, rawCode: string): void {
@@ -206,7 +211,7 @@ function joinRoom(socket: WebSocket, rawName: string, deviceId: string, rawCode:
   const code = String(rawCode || '').replace(/\D/g, '').slice(0, 5);
   const room = rooms.get(code);
   if (!room) return sendError(socket, 'ROOM_NOT_FOUND', 'That room code does not exist.');
-  if (room.status !== 'lobby') return sendError(socket, 'MATCH_STARTED', 'That game has already started.');
+  if (room.status === 'final_result') return sendError(socket, 'MATCH_FINISHED', 'That class game has already finished.');
   if (room.players.length >= room.maxPlayers) return sendError(socket, 'ROOM_FULL', 'That room is full.');
 
   const name = cleanName(rawName);
@@ -219,8 +224,22 @@ function joinRoom(socket: WebSocket, rawName: string, deviceId: string, rawCode:
   const player = makePlayer(socket, name, deviceId, false);
   room.players.push(player);
   membership.set(socket, { roomCode: code, playerId: player.id });
-  send(socket, { type: 'room_joined', playerId: player.id, room: publicRoom(room) });
-  broadcastRoom(room);
+
+  // A student may join after the ladder has started. They are not inserted into
+  // an active LaneMatch; they arrive on Class Matchups as a spectator and are
+  // included by the next matchmaking cycle. If the class is already on the
+  // result hold, rebuild the pending pairings so the late joiner is included in
+  // the immediately upcoming set rather than waiting an extra full game.
+  if (room.status === 'round_result' && room.pendingMatches.length > 0) {
+    const ordered = [...room.players].sort((a, b) => a.ladderRank - b.ladderRank || a.joinedAt - b.joinedAt);
+    room.pendingMatches = createMatchesFromOrderedPlayers(room, ordered);
+    setRanksFromMatches(room, room.pendingMatches);
+  }
+
+  send(socket, roomJoinedPayload(room, player.id));
+  if (room.status === 'lobby') broadcastRoom(room);
+  else if (room.status === 'bowling') broadcastBowling(room, 'bowling_state');
+  else broadcastRoom(room);
 }
 
 function setLevel(socket: WebSocket, level: GameLevel): void {
@@ -276,6 +295,7 @@ function startTournament(socket: WebSocket): void {
 
 function beginMatchupPhase(room: Room, autoStart: boolean): void {
   clearRoomTimer(room);
+  clearSpectatorSubscriptions(room);
   clearBotTimer(room);
   clearTurnTimer(room);
   clearMathTimer(room);
@@ -314,6 +334,7 @@ function returnToLobby(socket: WebSocket): void {
   clearBotTimer(room);
   clearTurnTimer(room);
   clearMathTimer(room);
+  clearSpectatorSubscriptions(room);
   room.players = room.players.filter((candidate) => !candidate.isBot);
   room.players.forEach((candidate) => {
     candidate.wins = 0;
@@ -369,10 +390,8 @@ function shotStarted(socket: WebSocket, rawShot: ShotVisualInput): void {
   match.turnEndsAt = Date.now() + SHOT_RESULT_GRACE_MS;
 
   const shot = sanitizeShotVisual(rawShot);
-  const opponentId = opponentOf(match, player.id);
-  const opponent = opponentId ? findPlayer(room, opponentId) : null;
-  if (shot && opponent?.socket) {
-    send(opponent.socket, {
+  if (shot) {
+    sendToMatchViewers(room, match, player.id, {
       type: 'spectator_shot',
       shot: {
         matchId: match.id,
@@ -403,15 +422,12 @@ function rollBall(socket: WebSocket, submittedKnockedPins?: number[], rawSpeedKm
   const speedKmh = Number.isFinite(Number(rawSpeedKmh)) ? Math.max(0, Math.min(80, Number(rawSpeedKmh))) : 0;
   const gutter = Boolean(rawGutter);
   rollForPlayer(room, match, player.id, actualKnockedPins, room.level !== 1 && !player.isBot);
-  const opponentId = opponentOf(match, player.id);
-  const opponent = opponentId ? findPlayer(room, opponentId) : null;
-  if (opponent?.socket) {
-    send(opponent.socket, {
-      type: 'spectator_shot_result',
-      result: { matchId: match.id, playerId: player.id, knockedPins: actualKnockedPins, speedKmh, gutter }
-    });
-  }
+  sendToMatchViewers(room, match, player.id, {
+    type: 'spectator_shot_result',
+    result: { matchId: match.id, playerId: player.id, knockedPins: actualKnockedPins, speedKmh, gutter }
+  });
   resolveMatchIfComplete(match);
+  if (match.complete) clearWatchersForMatch(room, match.id);
   armMatchShotClock(room, match);
   broadcastBowling(room, 'bowling_state');
   scheduleTurnTimeout(room);
@@ -463,6 +479,29 @@ function submitScore(socket: WebSocket, rawFrameIndex: number, rawTotal: number)
   scheduleMathTimeouts(room);
   if (room.matches.every((candidate) => candidate.complete)) scheduleFinishRound(room);
   else queueBotTurn(room);
+}
+
+function watchMatch(socket: WebSocket, rawMatchId: string): void {
+  const context = getContext(socket);
+  if (!context) return;
+  const { room, player } = context;
+  if (room.status !== 'bowling') return sendError(socket, 'NOT_BOWLING', 'Live spectating is available while bowling matches are in progress.');
+  const matchId = String(rawMatchId || '');
+  const watched = room.matches.find((match) => match.id === matchId);
+  if (!watched || watched.complete || !watched.playerBId) return sendError(socket, 'MATCH_NOT_LIVE', 'That lane is no longer live.');
+
+  const ownMatch = room.matches.find((match) => match.playerAId === player.id || match.playerBId === player.id);
+  if (!player.isHost && ownMatch && !ownMatch.complete) {
+    return sendError(socket, 'OWN_MATCH_ACTIVE', 'Your own bowling match is active. Return to your lane before spectating another match.');
+  }
+
+  player.watchingMatchId = watched.id;
+}
+
+function stopWatchingMatch(socket: WebSocket): void {
+  const context = getContext(socket);
+  if (!context) return;
+  context.player.watchingMatchId = null;
 }
 
 function devFinishRound(socket: WebSocket): void {
@@ -637,6 +676,7 @@ function finishRound(room: Room): void {
   clearBotTimer(room);
   clearTurnTimer(room);
   clearMathTimer(room);
+  clearSpectatorSubscriptions(room);
 
   const targetRanks = new Map<string, number>();
   const oldLane = new Map<string, number>();
@@ -924,6 +964,38 @@ function futureRolls(frames: number[][], frameIndex: number, count: number): num
   return out;
 }
 
+function roomJoinedPayload(room: Room, playerId: string) {
+  const payload: Record<string, unknown> = {
+    type: 'room_joined',
+    playerId,
+    room: publicRoom(room)
+  };
+  if (room.status !== 'lobby') payload.matchups = publicMatchups(room);
+  if (room.status === 'matchup') payload.phaseEndsAt = room.phaseEndsAt;
+  if (room.status === 'bowling' || room.status === 'round_result') {
+    const tournament = publicTournamentState(room);
+    payload.tournament = tournament;
+    if (room.status === 'round_result') {
+      payload.roundResult = {
+        ...tournament,
+        finalRound: false,
+        phaseEndsAt: room.phaseEndsAt ?? Date.now(),
+        movements: room.lastMovements
+      };
+    }
+  }
+  return payload;
+}
+
+function publicTournamentState(room: Room) {
+  return {
+    room: publicRoom(room),
+    round: room.round,
+    totalRounds: room.totalRounds,
+    matches: publicMatches(room)
+  };
+}
+
 function publicRoom(room: Room) {
   return {
     code: room.code,
@@ -1020,7 +1092,8 @@ function makeBotPlayer(): Player {
     joinedAt: Date.now() + 1,
     ladderRank: 1,
     wins: 0,
-    losses: 0
+    losses: 0,
+    watchingMatchId: null
   };
 }
 
@@ -1249,6 +1322,31 @@ function findPlayer(room: Room, id: string): Player | undefined {
   return room.players.find((player) => player.id === id);
 }
 
+function sendToMatchViewers(room: Room, match: LaneMatch, bowlerId: string, payload: object): void {
+  const recipientIds = new Set<string>();
+  const opponentId = opponentOf(match, bowlerId);
+  if (opponentId) recipientIds.add(opponentId);
+  for (const player of room.players) {
+    if (player.watchingMatchId === match.id && player.id !== bowlerId) recipientIds.add(player.id);
+  }
+
+  const data = JSON.stringify(payload);
+  for (const playerId of recipientIds) {
+    const socket = findPlayer(room, playerId)?.socket;
+    if (socket?.readyState === WebSocket.OPEN) socket.send(data);
+  }
+}
+
+function clearWatchersForMatch(room: Room, matchId: string): void {
+  room.players.forEach((player) => {
+    if (player.watchingMatchId === matchId) player.watchingMatchId = null;
+  });
+}
+
+function clearSpectatorSubscriptions(room: Room): void {
+  room.players.forEach((player) => { player.watchingMatchId = null; });
+}
+
 function broadcastRoom(room: Room): void {
   broadcast(room, { type: 'room_state', room: publicRoom(room) });
 }
@@ -1280,7 +1378,8 @@ function makePlayer(socket: WebSocket, name: string, deviceId: string, isHost: b
     joinedAt: Date.now(),
     ladderRank: 1,
     wins: 0,
-    losses: 0
+    losses: 0,
+    watchingMatchId: null
   };
 }
 
