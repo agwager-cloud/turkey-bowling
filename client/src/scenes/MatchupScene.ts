@@ -8,6 +8,8 @@ export class MatchupScene extends BaseBowlingScene {
   private cleanup: Array<() => void> = [];
   private countdownTimer = 0;
   private ui?: HTMLDivElement;
+  private laneScrollLeft = 0;
+  private leaderboardScrollTop = 0;
 
   constructor() { super('MatchupScene'); }
 
@@ -96,6 +98,10 @@ export class MatchupScene extends BaseBowlingScene {
     const canWatchOtherLanes = liveBowling && (isHost || !myActiveMatch);
     const leaderboard = sortLeaderboard(room);
     const liveCount = liveBowling ? (appState.tournament?.matches.filter((match) => !match.complete && Boolean(match.playerB)).length ?? 0) : 0;
+    const previousTrack = this.ui.querySelector<HTMLDivElement>('#lane-track');
+    if (previousTrack) this.laneScrollLeft = previousTrack.scrollLeft;
+    const previousLeaderboard = this.ui.querySelector<HTMLDivElement>('#leaderboard-list');
+    if (previousLeaderboard) this.leaderboardScrollTop = previousLeaderboard.scrollTop;
 
     this.ui.innerHTML = `
       <div class="match-shell interactive">
@@ -111,20 +117,29 @@ export class MatchupScene extends BaseBowlingScene {
         <div class="match-board-layout">
           <section class="match-lanes-pane">
             <div class="lane-direction"><span>← LOWEST LANE</span><span>CHAMPIONSHIP LANE →</span></div>
-            <div id="lane-track" class="lane-track">
-              ${appState.matchups.map((match) => renderLaneCard(match, liveStateFor(match.id), isHost, canWatchOtherLanes)).join('')}
+            <div class="lane-carousel">
+              <button id="lane-prev" class="lane-nav-btn lane-nav-prev" type="button" aria-label="View lanes to the left" title="Previous lane">◀</button>
+              <div id="lane-track" class="lane-track">
+                ${appState.matchups.map((match) => renderLaneCard(match, liveStateFor(match.id), isHost, canWatchOtherLanes)).join('')}
+              </div>
+              <button id="lane-next" class="lane-nav-btn lane-nav-next" type="button" aria-label="View lanes to the right" title="Next lane">▶</button>
             </div>
           </section>
 
           <aside class="match-leaderboard panel">
             <div class="leaderboard-title-row"><h2>Wins Leaderboard</h2><span>LIVE STANDINGS</span></div>
-            <div class="leaderboard-list">
-              ${leaderboard.map((player, index) => `
-                <div class="leaderboard-row${player.id === appState.playerId ? ' me' : ''}${player.id === room.championId ? ' champion' : ''}">
-                  <span class="leaderboard-pos">${player.id === room.championId ? '👑' : index + 1}</span>
-                  <span class="leaderboard-name">${escapeHtml(player.name)}</span>
-                  <strong>${player.wins}</strong>
-                </div>`).join('')}
+            <div class="leaderboard-scroll-shell">
+              <button id="leaderboard-up" class="leaderboard-page-btn leaderboard-page-up" type="button" aria-label="View previous leaderboard names" title="Previous leaderboard page">▲</button>
+              <div id="leaderboard-list" class="leaderboard-list">
+                ${leaderboard.map((player, index) => `
+                  <div class="leaderboard-row${player.id === appState.playerId ? ' me' : ''}${player.id === room.championId ? ' champion' : ''}" data-leaderboard-rank="${index + 1}">
+                    <span class="leaderboard-pos">${player.id === room.championId ? '👑' : index + 1}</span>
+                    <span class="leaderboard-name">${escapeHtml(player.name)}</span>
+                    <strong>${player.wins}</strong>
+                  </div>`).join('')}
+              </div>
+              <div id="leaderboard-range" class="leaderboard-range" aria-live="polite">${leaderboard.length ? `1–${Math.min(leaderboard.length, 1)} of ${leaderboard.length}` : '0 of 0'}</div>
+              <button id="leaderboard-down" class="leaderboard-page-btn leaderboard-page-down" type="button" aria-label="View more leaderboard names" title="Next leaderboard page">▼</button>
             </div>
           </aside>
         </div>
@@ -163,7 +178,103 @@ export class MatchupScene extends BaseBowlingScene {
     this.ui.querySelectorAll<HTMLElement>('[data-own-game]').forEach((card) => {
       card.addEventListener('click', () => this.scene.start('BowlingScene'));
     });
+    this.setupLaneNavigation();
+    this.setupLeaderboardNavigation();
     this.updateCountdown();
+  }
+
+  private setupLaneNavigation(): void {
+    if (!this.ui) return;
+    const track = this.ui.querySelector<HTMLDivElement>('#lane-track');
+    const previous = this.ui.querySelector<HTMLButtonElement>('#lane-prev');
+    const next = this.ui.querySelector<HTMLButtonElement>('#lane-next');
+    if (!track || !previous || !next) return;
+
+    const updateButtons = () => {
+      const maxScroll = Math.max(0, track.scrollWidth - track.clientWidth);
+      previous.disabled = maxScroll < 2 || track.scrollLeft <= 2;
+      next.disabled = maxScroll < 2 || track.scrollLeft >= maxScroll - 2;
+    };
+
+    const moveOneLane = (direction: -1 | 1) => {
+      const cards = Array.from(track.querySelectorAll<HTMLElement>('.lane-card'));
+      if (cards.length === 0) return;
+      const trackRect = track.getBoundingClientRect();
+      const currentCentre = track.scrollLeft + track.clientWidth / 2;
+      const centres = cards.map((card) =>
+        card.getBoundingClientRect().left - trackRect.left + track.scrollLeft + card.clientWidth / 2
+      );
+      const targetCentre = direction > 0
+        ? centres.find((centre) => centre > currentCentre + 10) ?? centres[centres.length - 1]
+        : [...centres].reverse().find((centre) => centre < currentCentre - 10) ?? centres[0];
+      const maxScroll = Math.max(0, track.scrollWidth - track.clientWidth);
+      const targetLeft = Math.max(0, Math.min(maxScroll, targetCentre - track.clientWidth / 2));
+      track.scrollTo({ left: targetLeft, behavior: 'smooth' });
+    };
+
+    previous.addEventListener('click', () => moveOneLane(-1));
+    next.addEventListener('click', () => moveOneLane(1));
+    track.addEventListener('scroll', () => {
+      this.laneScrollLeft = track.scrollLeft;
+      updateButtons();
+    }, { passive: true });
+
+    requestAnimationFrame(() => {
+      const maxScroll = Math.max(0, track.scrollWidth - track.clientWidth);
+      track.scrollLeft = Math.max(0, Math.min(maxScroll, this.laneScrollLeft));
+      updateButtons();
+    });
+  }
+
+  private setupLeaderboardNavigation(): void {
+    if (!this.ui) return;
+    const list = this.ui.querySelector<HTMLDivElement>('#leaderboard-list');
+    const up = this.ui.querySelector<HTMLButtonElement>('#leaderboard-up');
+    const down = this.ui.querySelector<HTMLButtonElement>('#leaderboard-down');
+    const range = this.ui.querySelector<HTMLElement>('#leaderboard-range');
+    if (!list || !up || !down || !range) return;
+
+    const rows = Array.from(list.querySelectorAll<HTMLElement>('.leaderboard-row'));
+
+    const updateControls = () => {
+      const maxScroll = Math.max(0, list.scrollHeight - list.clientHeight);
+      up.disabled = maxScroll < 2 || list.scrollTop <= 2;
+      down.disabled = maxScroll < 2 || list.scrollTop >= maxScroll - 2;
+
+      if (rows.length === 0) {
+        range.textContent = '0 of 0';
+        return;
+      }
+
+      const listRect = list.getBoundingClientRect();
+      const visible = rows.filter((row) => {
+        const rect = row.getBoundingClientRect();
+        return rect.bottom > listRect.top + 1 && rect.top < listRect.bottom - 1;
+      });
+      const first = Number((visible[0] ?? rows[0]).dataset.leaderboardRank ?? 1);
+      const last = Number((visible[visible.length - 1] ?? rows[rows.length - 1]).dataset.leaderboardRank ?? rows.length);
+      range.textContent = first === last ? `${first} of ${rows.length}` : `${first}–${last} of ${rows.length}`;
+    };
+
+    const movePage = (direction: -1 | 1) => {
+      const firstRow = rows[0];
+      const rowStep = firstRow ? firstRow.getBoundingClientRect().height + 5 : 40;
+      const pageDistance = Math.max(rowStep, list.clientHeight - rowStep);
+      list.scrollBy({ top: direction * pageDistance, behavior: 'smooth' });
+    };
+
+    up.addEventListener('click', () => movePage(-1));
+    down.addEventListener('click', () => movePage(1));
+    list.addEventListener('scroll', () => {
+      this.leaderboardScrollTop = list.scrollTop;
+      updateControls();
+    }, { passive: true });
+
+    requestAnimationFrame(() => {
+      const maxScroll = Math.max(0, list.scrollHeight - list.clientHeight);
+      list.scrollTop = Math.max(0, Math.min(maxScroll, this.leaderboardScrollTop));
+      updateControls();
+    });
   }
 
   private openSpectator(matchId: string): void {

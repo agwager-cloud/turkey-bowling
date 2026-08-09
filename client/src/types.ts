@@ -9,6 +9,7 @@ export interface PlayerSummary {
   lane: number;
   wins: number;
   losses: number;
+  connected: boolean;
 }
 
 export interface RoomState {
@@ -79,6 +80,9 @@ export interface LaneMatchState extends LaneMatchup {
   loserId: string | null;
   tieBreak: boolean;
   turnEndsAt: number | null;
+  disconnectedPlayerId: string | null;
+  reconnectEndsAt: number | null;
+  forfeitPlayerId: string | null;
 }
 
 export interface TournamentState {

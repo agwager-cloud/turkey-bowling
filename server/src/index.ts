@@ -44,6 +44,8 @@ interface Player {
   wins: number;
   losses: number;
   watchingMatchId: string | null;
+  disconnectEndsAt: number | null;
+  disconnectTimer: ReturnType<typeof setTimeout> | null;
 }
 
 interface BowlerGame {
@@ -57,6 +59,7 @@ interface BowlerGame {
   mathEndsAt: number | null;
   mathTimeouts: number;
   mathAttempts: number[];
+  pausedMathRemainingMs: number | null;
 }
 
 interface LaneMatch {
@@ -73,6 +76,10 @@ interface LaneMatch {
   tieBreak: boolean;
   turnEndsAt: number | null;
   shotInMotion: boolean;
+  disconnectedPlayerId: string | null;
+  reconnectEndsAt: number | null;
+  pausedTurnRemainingMs: number | null;
+  forfeitPlayerId: string | null;
 }
 
 interface Movement {
@@ -110,6 +117,7 @@ const SHOT_RESULT_GRACE_MS = 6000;
 const LEVEL_2_MATH_MS = 20000;
 const LEVEL_3_MATH_MS = 30000;
 const MATH_PENALTY_PERCENT = 5;
+const DISCONNECT_GRACE_MS = 20000;
 const WEBSOCKET_HEARTBEAT_MS = 25000;
 const rooms = new Map<string, Room>();
 const membership = new Map<WebSocket, { roomCode: string; playerId: string }>();
@@ -212,12 +220,26 @@ function joinRoom(socket: WebSocket, rawName: string, deviceId: string, rawCode:
   const room = rooms.get(code);
   if (!room) return sendError(socket, 'ROOM_NOT_FOUND', 'That room code does not exist.');
   if (room.status === 'final_result') return sendError(socket, 'MATCH_FINISHED', 'That class game has already finished.');
-  if (room.players.length >= room.maxPlayers) return sendError(socket, 'ROOM_FULL', 'That room is full.');
 
   const name = cleanName(rawName);
   const normalized = normalizeName(name);
   if (!validName(name)) return sendError(socket, 'BAD_NAME', 'Use a name between 2 and 18 characters.');
   if (room.kickedNames.has(normalized)) return sendError(socket, 'CHANGE_NAME', 'You were removed from this room. Change your name before rejoining.');
+
+  // Reconnect the same student/device to their existing room identity. During
+  // the 20-second active-match grace period this resumes the exact lane state;
+  // after a forfeit it simply returns them as a waiting player for the next cycle.
+  const reconnecting = room.players.find((player) => !player.isBot && !player.socket && player.normalizedName === normalized && player.deviceId === deviceId);
+  if (reconnecting) {
+    reconnectPlayer(room, reconnecting, socket);
+    send(socket, roomJoinedPayload(room, reconnecting.id));
+    if (room.status === 'lobby') broadcastRoom(room);
+    else if (room.status === 'bowling') broadcastBowling(room, 'bowling_state');
+    else broadcastRoom(room);
+    return;
+  }
+
+  if (room.players.length >= room.maxPlayers) return sendError(socket, 'ROOM_FULL', 'That room is full.');
   if (room.players.some((player) => player.normalizedName === normalized)) return sendError(socket, 'DUPLICATE_NAME', 'That name is already being used in this room.');
   if (room.players.some((player) => player.deviceId === deviceId)) return sendError(socket, 'DUPLICATE_DEVICE', 'Only one player account can join this room from the same device.');
 
@@ -335,7 +357,8 @@ function returnToLobby(socket: WebSocket): void {
   clearTurnTimer(room);
   clearMathTimer(room);
   clearSpectatorSubscriptions(room);
-  room.players = room.players.filter((candidate) => !candidate.isBot);
+  room.players.forEach((candidate) => { if (candidate.disconnectTimer) clearTimeout(candidate.disconnectTimer); });
+  room.players = room.players.filter((candidate) => !candidate.isBot && candidate.socket?.readyState === WebSocket.OPEN);
   room.players.forEach((candidate) => {
     candidate.wins = 0;
     candidate.losses = 0;
@@ -379,7 +402,7 @@ function shotStarted(socket: WebSocket, rawShot: ShotVisualInput): void {
   const { room, player } = context;
   if (room.status !== 'bowling') return;
   const match = room.matches.find((candidate) => candidate.playerAId === player.id || candidate.playerBId === player.id);
-  if (!match || match.complete || match.currentPlayerId !== player.id || match.shotInMotion) return;
+  if (!match || match.complete || match.disconnectedPlayerId || match.currentPlayerId !== player.id || match.shotInMotion) return;
   const game = match.games.get(player.id);
   if (matchHasPendingMath(match)) return sendError(socket, 'MATH_REQUIRED', 'Wait until the required score calculation is complete before the next bowl.');
 
@@ -412,6 +435,7 @@ function rollBall(socket: WebSocket, submittedKnockedPins?: number[], rawSpeedKm
   if (room.status !== 'bowling') return sendError(socket, 'NOT_BOWLING', 'Wait for the bowling round to begin.');
   const match = room.matches.find((candidate) => candidate.playerAId === player.id || candidate.playerBId === player.id);
   if (!match || match.complete) return;
+  if (match.disconnectedPlayerId) return sendError(socket, 'OPPONENT_RECONNECTING', 'This lane is paused while the disconnected player has 20 seconds to rejoin.');
   if (match.currentPlayerId !== player.id) return sendError(socket, 'NOT_YOUR_TURN', 'Wait for your opponent to finish this frame.');
   const game = match.games.get(player.id);
   if (!game) return;
@@ -446,6 +470,7 @@ function submitScore(socket: WebSocket, rawFrameIndex: number, rawTotal: number)
   const match = room.matches.find((candidate) => candidate.playerAId === player.id || candidate.playerBId === player.id);
   const game = match?.games.get(player.id);
   if (!match || !game) return;
+  if (match.disconnectedPlayerId) return sendError(socket, 'OPPONENT_RECONNECTING', 'This lane is paused while the disconnected player has 20 seconds to rejoin.');
   const expectedFrame = game.pendingMathFrames[0];
   if (expectedFrame === undefined) return sendError(socket, 'NO_SCORE_TASK', 'There is no score calculation waiting right now.');
 
@@ -750,6 +775,14 @@ function finishRound(room: Room): void {
   room.timer = setTimeout(() => {
     if (!rooms.has(room.code) || room.status !== 'round_result') return;
     clearRoomTimer(room);
+    room.players = room.players.filter((player) => player.isBot || player.socket?.readyState === WebSocket.OPEN);
+    if (room.players.length === 0 || room.players.every((player) => player.isBot)) {
+      rooms.delete(room.code);
+      return;
+    }
+    const ordered = [...room.players].sort((a, b) => a.ladderRank - b.ladderRank || a.joinedAt - b.joinedAt);
+    room.pendingMatches = createMatchesFromOrderedPlayers(room, ordered);
+    setRanksFromMatches(room, room.pendingMatches);
     room.round++;
     room.matches = room.pendingMatches;
     room.pendingMatches = [];
@@ -797,7 +830,7 @@ function createOpeningMatches(room: Room): LaneMatch[] {
 }
 
 function createMatchesFromOrderedPlayers(room: Room, ordered: Player[]): LaneMatch[] {
-  const players = [...ordered];
+  const players = ordered.filter((player) => player.isBot || player.socket?.readyState === WebSocket.OPEN);
   const matches: LaneMatch[] = [];
   const laneCount = Math.ceil(players.length / 2);
   let lane = 1;
@@ -832,7 +865,11 @@ function makeLaneMatch(lane: number, laneCount: number, a: Player, b: Player | n
     loserId: null,
     tieBreak: false,
     turnEndsAt: null,
-    shotInMotion: false
+    shotInMotion: false,
+    disconnectedPlayerId: null,
+    reconnectEndsAt: null,
+    pausedTurnRemainingMs: null,
+    forfeitPlayerId: null
   };
 }
 
@@ -847,7 +884,8 @@ function newBowlerGame(playerId: string): BowlerGame {
     pendingMathFrames: [],
     mathEndsAt: null,
     mathTimeouts: 0,
-    mathAttempts: []
+    mathAttempts: [],
+    pausedMathRemainingMs: null
   };
 }
 
@@ -1017,7 +1055,8 @@ function publicPlayer(player: Player) {
     isBot: player.isBot,
     lane: player.ladderRank,
     wins: player.wins,
-    losses: player.losses
+    losses: player.losses,
+    connected: player.isBot || player.socket?.readyState === WebSocket.OPEN
   };
 }
 
@@ -1034,7 +1073,7 @@ function publicMatchups(room: Room) {
 function publicPlayerById(room: Room, id: string) {
   const player = findPlayer(room, id);
   if (player) return publicPlayer(player);
-  return { id, name: 'Disconnected', isHost: false, isBot: false, lane: 1, wins: 0, losses: 0 };
+  return { id, name: 'Disconnected', isHost: false, isBot: false, lane: 1, wins: 0, losses: 0, connected: false };
 }
 
 function publicMatches(room: Room) {
@@ -1046,7 +1085,10 @@ function publicMatches(room: Room) {
     winnerId: match.winnerId,
     loserId: match.loserId,
     tieBreak: match.tieBreak,
-    turnEndsAt: match.turnEndsAt
+    turnEndsAt: match.turnEndsAt,
+    disconnectedPlayerId: match.disconnectedPlayerId,
+    reconnectEndsAt: match.reconnectEndsAt,
+    forfeitPlayerId: match.forfeitPlayerId
   }));
 }
 
@@ -1093,7 +1135,9 @@ function makeBotPlayer(): Player {
     ladderRank: 1,
     wins: 0,
     losses: 0,
-    watchingMatchId: null
+    watchingMatchId: null,
+    disconnectEndsAt: null,
+    disconnectTimer: null
   };
 }
 
@@ -1102,7 +1146,7 @@ function queueBotTurn(room: Room): void {
   if (room.status !== 'bowling') return;
 
   const match = room.matches.find((candidate) => {
-    if (candidate.complete || !candidate.currentPlayerId) return false;
+    if (candidate.complete || candidate.disconnectedPlayerId || !candidate.currentPlayerId) return false;
     // Do not let the next bowler (including Turkey Bot) start while the other
     // player is still completing a required Level 2/3 score calculation.
     if (matchHasPendingMath(candidate)) return false;
@@ -1131,7 +1175,7 @@ function queueBotTurn(room: Room): void {
 
 function armMatchShotClock(room: Room, match: LaneMatch): void {
   match.shotInMotion = false;
-  if (room.status !== 'bowling' || match.complete || !match.currentPlayerId) {
+  if (room.status !== 'bowling' || match.complete || match.disconnectedPlayerId || !match.currentPlayerId) {
     match.turnEndsAt = null;
     return;
   }
@@ -1151,7 +1195,7 @@ function scheduleTurnTimeout(room: Room): void {
   clearTurnTimer(room);
   if (room.status !== 'bowling') return;
   const deadlines = room.matches
-    .filter((match) => !match.complete && match.currentPlayerId && match.turnEndsAt)
+    .filter((match) => !match.complete && !match.disconnectedPlayerId && match.currentPlayerId && match.turnEndsAt)
     .map((match) => match.turnEndsAt as number);
   if (!deadlines.length) return;
   const nextDeadline = Math.min(...deadlines);
@@ -1165,7 +1209,7 @@ function handleTurnTimeouts(room: Room): void {
   let changed = false;
 
   for (const match of room.matches) {
-    if (match.complete || !match.currentPlayerId || !match.turnEndsAt || match.turnEndsAt > now) continue;
+    if (match.complete || match.disconnectedPlayerId || !match.currentPlayerId || !match.turnEndsAt || match.turnEndsAt > now) continue;
     const timedOutId = match.currentPlayerId;
     const player = findPlayer(room, timedOutId);
     if (player?.isBot) {
@@ -1197,6 +1241,7 @@ function scheduleMathTimeouts(room: Room): void {
   if (room.status !== 'bowling' || room.level === 1) return;
   const deadlines: number[] = [];
   for (const match of room.matches) {
+    if (match.disconnectedPlayerId) continue;
     for (const game of match.games.values()) {
       if (game.pendingMathFrames.length && game.mathEndsAt) deadlines.push(game.mathEndsAt);
     }
@@ -1213,6 +1258,7 @@ function handleMathTimeouts(room: Room): void {
   let changed = false;
 
   for (const match of room.matches) {
+    if (match.disconnectedPlayerId) continue;
     for (const game of match.games.values()) {
       if (!game.pendingMathFrames.length || !game.mathEndsAt || game.mathEndsAt > now) continue;
       const player = findPlayer(room, game.playerId);
@@ -1269,7 +1315,151 @@ function removeSocket(socket: WebSocket): void {
   const room = rooms.get(member.roomCode);
   if (!room) return;
   const leaving = room.players.find((player) => player.id === member.playerId);
-  room.players = room.players.filter((player) => player.id !== member.playerId);
+  if (!leaving || leaving.socket !== socket) return;
+  leaving.socket = null;
+  leaving.watchingMatchId = null;
+
+  if (room.status === 'bowling') {
+    const match = room.matches.find((candidate) => !candidate.complete && (candidate.playerAId === leaving.id || candidate.playerBId === leaving.id));
+    if (match) {
+      pauseMatchForDisconnect(room, match, leaving);
+      return;
+    }
+  }
+
+  // Outside an active bowling match there is no game state to preserve, so keep
+  // the original immediate-leave behaviour.
+  removePlayerFromRoom(room, leaving.id);
+}
+
+function pauseMatchForDisconnect(room: Room, match: LaneMatch, player: Player): void {
+  if (match.complete || match.disconnectedPlayerId) return;
+  const now = Date.now();
+  match.disconnectedPlayerId = player.id;
+  match.reconnectEndsAt = now + DISCONNECT_GRACE_MS;
+  match.pausedTurnRemainingMs = match.turnEndsAt ? Math.max(0, match.turnEndsAt - now) : null;
+  match.turnEndsAt = null;
+  // A released bowl is not committed until roll_ball arrives. If the connection
+  // drops mid-animation, preserve the score/pins and let that delivery be replayed
+  // after reconnect rather than turning a network fault into a zero-pin result.
+  if (match.shotInMotion) {
+    match.shotInMotion = false;
+    match.pausedTurnRemainingMs = SHOT_CLOCK_MS;
+  }
+  for (const game of match.games.values()) {
+    game.pausedMathRemainingMs = game.mathEndsAt ? Math.max(0, game.mathEndsAt - now) : null;
+    game.mathEndsAt = null;
+  }
+
+  if (player.disconnectTimer) clearTimeout(player.disconnectTimer);
+  player.disconnectEndsAt = match.reconnectEndsAt;
+  player.disconnectTimer = setTimeout(() => forfeitDisconnectedPlayer(room.code, player.id, match.id), DISCONNECT_GRACE_MS + 20);
+
+  clearBotTimer(room);
+  scheduleTurnTimeout(room);
+  scheduleMathTimeouts(room);
+  broadcastBowling(room, 'bowling_state');
+  queueBotTurn(room);
+}
+
+function reconnectPlayer(room: Room, player: Player, socket: WebSocket): void {
+  let match = room.matches.find((candidate) => candidate.disconnectedPlayerId === player.id && !candidate.complete);
+  // If a join packet arrives just after the grace deadline but before the timer
+  // callback has executed, resolve the forfeit first so the expired lane cannot
+  // become permanently paused.
+  if (match?.reconnectEndsAt && match.reconnectEndsAt < Date.now()) {
+    forfeitDisconnectedPlayer(room.code, player.id, match.id);
+    match = undefined;
+  }
+
+  if (player.disconnectTimer) clearTimeout(player.disconnectTimer);
+  player.disconnectTimer = null;
+  player.disconnectEndsAt = null;
+  player.socket = socket;
+  membership.set(socket, { roomCode: room.code, playerId: player.id });
+
+  if (match && match.reconnectEndsAt && match.reconnectEndsAt >= Date.now()) {
+    const now = Date.now();
+    match.disconnectedPlayerId = null;
+    match.reconnectEndsAt = null;
+    for (const game of match.games.values()) {
+      if (game.pendingMathFrames.length && game.pausedMathRemainingMs !== null) {
+        game.mathEndsAt = now + Math.max(250, game.pausedMathRemainingMs);
+      }
+      game.pausedMathRemainingMs = null;
+    }
+    if (!matchHasPendingMath(match) && match.currentPlayerId) {
+      const current = findPlayer(room, match.currentPlayerId);
+      match.turnEndsAt = current && !current.isBot
+        ? now + Math.max(250, match.pausedTurnRemainingMs ?? SHOT_CLOCK_MS)
+        : null;
+    }
+    match.pausedTurnRemainingMs = null;
+    scheduleTurnTimeout(room);
+    scheduleMathTimeouts(room);
+    queueBotTurn(room);
+  }
+
+  // A player who reconnects after the grace period has already forfeited that
+  // match, but can still wait/spectate and be included in the next ladder cycle.
+  if (room.status === 'round_result' && room.pendingMatches.length > 0) {
+    const ordered = [...room.players].sort((a, b) => a.ladderRank - b.ladderRank || a.joinedAt - b.joinedAt);
+    room.pendingMatches = createMatchesFromOrderedPlayers(room, ordered);
+    setRanksFromMatches(room, room.pendingMatches);
+  }
+}
+
+function forfeitDisconnectedPlayer(roomCode: string, playerId: string, matchId: string): void {
+  const room = rooms.get(roomCode);
+  if (!room || room.status !== 'bowling') return;
+  const player = findPlayer(room, playerId);
+  const match = room.matches.find((candidate) => candidate.id === matchId);
+  if (!player || player.socket || !match || match.complete || match.disconnectedPlayerId !== playerId) return;
+
+  const opponentId = opponentOf(match, playerId);
+  if (!opponentId) return;
+  const opponent = findPlayer(room, opponentId);
+  if (!opponent || (!opponent.isBot && !opponent.socket)) return;
+
+  player.disconnectTimer = null;
+  player.disconnectEndsAt = null;
+  match.complete = true;
+  match.winnerId = opponentId;
+  match.loserId = playerId;
+  match.forfeitPlayerId = playerId;
+  match.currentPlayerId = null;
+  match.turnEndsAt = null;
+  match.disconnectedPlayerId = null;
+  match.reconnectEndsAt = null;
+  match.pausedTurnRemainingMs = null;
+  match.shotInMotion = false;
+  for (const game of match.games.values()) {
+    game.mathEndsAt = null;
+    game.pausedMathRemainingMs = null;
+  }
+  clearWatchersForMatch(room, match.id);
+
+  if (player.isHost) {
+    player.isHost = false;
+    const nextHost = room.players
+      .filter((candidate) => !candidate.isBot && candidate.socket?.readyState === WebSocket.OPEN)
+      .sort((a, b) => a.joinedAt - b.joinedAt)[0];
+    if (nextHost) nextHost.isHost = true;
+  }
+
+  broadcastBowling(room, 'bowling_state');
+  scheduleTurnTimeout(room);
+  scheduleMathTimeouts(room);
+  clearBotTimer(room);
+  queueBotTurn(room);
+  if (room.matches.every((candidate) => candidate.complete)) scheduleFinishRound(room);
+}
+
+function removePlayerFromRoom(room: Room, playerId: string): void {
+  const leaving = findPlayer(room, playerId);
+  if (!leaving) return;
+  if (leaving.disconnectTimer) clearTimeout(leaving.disconnectTimer);
+  room.players = room.players.filter((player) => player.id !== playerId);
 
   if (room.players.length === 0 || room.players.every((player) => player.isBot)) {
     clearRoomTimer(room);
@@ -1279,31 +1469,17 @@ function removeSocket(socket: WebSocket): void {
     rooms.delete(room.code);
     return;
   }
-  if (leaving?.isHost) {
-    room.players.sort((a, b) => a.joinedAt - b.joinedAt);
+  if (leaving.isHost) {
     room.players.forEach((player) => { player.isHost = false; });
-    const nextHost = room.players.find((player) => !player.isBot);
+    const nextHost = room.players
+      .filter((player) => !player.isBot && player.socket?.readyState === WebSocket.OPEN)
+      .sort((a, b) => a.joinedAt - b.joinedAt)[0];
     if (nextHost) nextHost.isHost = true;
   }
 
-  if (room.status === 'lobby') {
-    broadcastRoom(room);
-    return;
-  }
-
-  // During a test tournament, a disconnected player forfeits their current lane match.
-  const match = room.matches.find((candidate) => candidate.playerAId === member.playerId || candidate.playerBId === member.playerId);
-  if (match && !match.complete) {
-    const opponentId = opponentOf(match, member.playerId);
-    if (opponentId && findPlayer(room, opponentId)) {
-      match.complete = true;
-      match.winnerId = opponentId;
-      match.loserId = member.playerId;
-      match.currentPlayerId = null;
-      broadcastBowling(room, 'bowling_state');
-      if (room.matches.every((candidate) => candidate.complete || !findPlayer(room, candidate.playerAId) || (candidate.playerBId && !findPlayer(room, candidate.playerBId)))) scheduleFinishRound(room);
-    }
-  }
+  if (room.status === 'lobby') broadcastRoom(room);
+  else if (room.status === 'bowling') broadcastBowling(room, 'bowling_state');
+  else broadcastRoom(room);
 }
 
 function getContext(socket: WebSocket): { room: Room; player: Player } | null {
@@ -1379,7 +1555,9 @@ function makePlayer(socket: WebSocket, name: string, deviceId: string, isHost: b
     ladderRank: 1,
     wins: 0,
     losses: 0,
-    watchingMatchId: null
+    watchingMatchId: null,
+    disconnectEndsAt: null,
+    disconnectTimer: null
   };
 }
 

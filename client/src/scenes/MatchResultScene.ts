@@ -68,6 +68,8 @@ export class MatchResultScene extends BaseBowlingScene {
     const theirs = opponent ? match.games.find((g) => g.playerId === opponent.id) : null;
     const won = match.winnerId === appState.playerId;
     const bye = !match.playerB;
+    const wonByForfeit = Boolean(match.forfeitPlayerId && match.forfeitPlayerId !== appState.playerId && won);
+    const lostByForfeit = match.forfeitPlayerId === appState.playerId;
     const movement = roundResult?.movements.find((m) => m.playerId === appState.playerId);
     const waiting = !roundResult;
     const seconds = roundResult ? Math.max(0, Math.ceil((roundResult.phaseEndsAt - Date.now()) / 1000)) : null;
@@ -84,14 +86,17 @@ export class MatchResultScene extends BaseBowlingScene {
       <div class="result-shell interactive">
         <section class="result-card panel ${won || bye ? 'win-card' : 'loss-card'}">
           <div class="result-kicker">MATCH RESULT</div>
-          <div class="result-icon">${bye ? '🦃' : won ? '🏆' : '🎳'}</div>
-          <h1>${bye ? 'Automatic Bye Win' : won ? 'You Won!' : 'Match Complete'}</h1>
-          <div class="final-score-heading">FINAL SCORE</div>
-          <div class="result-scoreline penalty-scoreline">
-            ${renderFinalScoreSide(appState.playerName, mineRaw, mineFinal, mine?.mathTimeouts ?? 0, mine?.penaltyPercent ?? 0, true)}
-            <em>VS</em>
-            ${renderFinalScoreSide(opponent?.name ?? 'BYE', theirsRaw, theirsFinal, theirs?.mathTimeouts ?? 0, theirs?.penaltyPercent ?? 0, false)}
-          </div>
+          <div class="result-icon">${bye ? '🦃' : wonByForfeit ? '📡🏆' : lostByForfeit ? '📡' : won ? '🏆' : '🎳'}</div>
+          <h1>${bye ? 'Automatic Bye Win' : wonByForfeit ? 'Won by Forfeit' : lostByForfeit ? 'Match Forfeited' : won ? 'You Won!' : 'Match Complete'}</h1>
+          ${wonByForfeit ? '<div class="forfeit-result-note">Your opponent did not reconnect within 20 seconds. You receive the match win.</div>' : lostByForfeit ? '<div class="forfeit-result-note">The 20-second reconnect window expired.</div>' : ''}
+          ${wonByForfeit || lostByForfeit
+            ? `<div class="forfeit-score-summary"><strong>${wonByForfeit ? escapeHtml(appState.playerName) : escapeHtml(opponent?.name ?? 'Opponent')}</strong><span>WIN BY FORFEIT</span><em>20-second reconnect window expired</em></div>`
+            : `<div class="final-score-heading">FINAL SCORE</div>
+              <div class="result-scoreline penalty-scoreline">
+                ${renderFinalScoreSide(appState.playerName, mineRaw, mineFinal, mine?.mathTimeouts ?? 0, mine?.penaltyPercent ?? 0, true)}
+                <em>VS</em>
+                ${renderFinalScoreSide(opponent?.name ?? 'BYE', theirsRaw, theirsFinal, theirs?.mathTimeouts ?? 0, theirs?.penaltyPercent ?? 0, false)}
+              </div>`}
           ${match.tieBreak ? '<div class="tie-note">Final scores were tied. This prototype used a temporary random lane tie-break; a proper roll-off can replace it later.</div>' : ''}
           <div class="movement-box ${movement ? 'ready' : ''}">
             ${waiting ? '<strong>Final score locked</strong><small>Waiting for the other lanes to finish…</small>' : `<div class="result-countdown"><span>NEXT MATCHUPS IN</span><strong>${seconds}</strong><small>seconds</small></div><strong>${movementText}</strong>`}

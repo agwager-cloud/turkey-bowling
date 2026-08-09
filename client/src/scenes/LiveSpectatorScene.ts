@@ -12,6 +12,7 @@ export class LiveSpectatorScene extends BaseBowlingScene {
   private simulator?: BowlingSimulator;
   private shotClockFrame = 0;
   private mathClockFrame = 0;
+  private reconnectClockFrame = 0;
   private returnTimer = 0;
   private lastMatchFingerprint = '';
   private spectatorPlayerId: string | null = null;
@@ -122,7 +123,10 @@ export class LiveSpectatorScene extends BaseBowlingScene {
     const isHost = Boolean(me?.isHost);
     const ownMatch = findOwnMatch(state);
     const ownActive = Boolean(ownMatch && !ownMatch.complete && ownMatch.playerB);
-    const mathGame = state.room.level === 1 ? undefined : match.games.find((game) => game.pendingMathFrames.length > 0);
+    const lanePaused = Boolean(match.disconnectedPlayerId && match.reconnectEndsAt && !match.complete);
+    const disconnectedPlayer = lanePaused ? playerInMatch(match, match.disconnectedPlayerId) : null;
+    const disconnectedName = disconnectedPlayer?.name ?? 'Player';
+    const mathGame = !lanePaused && state.room.level !== 1 ? match.games.find((game) => game.pendingMathFrames.length > 0) : undefined;
     const mathFrame = mathGame?.pendingMathFrames[0];
     const activePlayerId = mathGame?.playerId ?? match.currentPlayerId;
     const activePlayer = playerInMatch(match, activePlayerId);
@@ -153,14 +157,14 @@ export class LiveSpectatorScene extends BaseBowlingScene {
               <canvas id="bowling-sim-canvas" class="bowling-sim-canvas" aria-label="Live spectator view of the bowling lane."></canvas>
               <div class="sim-stage-hud">
                 <span id="sim-speed">BALL SPEED — KM/H</span>
-                <strong id="sim-shot-note">${match.complete ? 'MATCH COMPLETE' : activePlayer ? `WATCHING ${escapeHtml(activePlayer.name)}` : 'LIVE MATCH'}</strong>
+                <strong id="sim-shot-note">${match.complete ? 'MATCH COMPLETE' : lanePaused ? 'MATCH PAUSED • RECONNECTING' : activePlayer ? `WATCHING ${escapeHtml(activePlayer.name)}` : 'LIVE MATCH'}</strong>
               </div>
             </div>
-            <div class="turn-callout spectating-turn">
-              <span>${match.complete ? 'MATCH COMPLETE' : mathGame && activePlayer ? `${escapeHtml(activePlayer.name)} — SCORE CHECK` : activePlayer ? `LIVE • ${escapeHtml(activePlayer.name)} — FRAME ${activeGame?.currentFrame ?? 1}` : 'LIVE MATCH'}</span>
+            <div class="turn-callout ${lanePaused ? 'disconnect-paused' : 'spectating-turn'}">
+              <span>${match.complete ? 'MATCH COMPLETE' : lanePaused ? `${escapeHtml(disconnectedName)} DISCONNECTED — MATCH PAUSED` : mathGame && activePlayer ? `${escapeHtml(activePlayer.name)} — SCORE CHECK` : activePlayer ? `LIVE • ${escapeHtml(activePlayer.name)} — FRAME ${activeGame?.currentFrame ?? 1}` : 'LIVE MATCH'}</span>
             </div>
             <div class="frame-progress">${activePlayer && activeGame ? `${escapeHtml(activePlayer.name)} • ${frameStatus(activeGame)}` : 'Waiting for the next live action…'}</div>
-            ${renderGlobalSpectatorPanel(activePlayer, activeGame, match, state.room.level, mathFrame)}
+            ${lanePaused ? renderReconnectPanel(disconnectedName) : renderGlobalSpectatorPanel(activePlayer, activeGame, match, state.room.level, mathFrame)}
             <div class="global-spectator-note">Live spectator view mirrors the real lane. Aim, hook, power/release controls and private keypad entry are intentionally hidden.</div>
           </section>
         </main>
@@ -176,7 +180,8 @@ export class LiveSpectatorScene extends BaseBowlingScene {
     this.ui.querySelector<HTMLButtonElement>('#spectator-own-game')?.addEventListener('click', () => this.returnToOwnGame());
     this.ui.querySelector<HTMLButtonElement>('#spectator-lobby')?.addEventListener('click', () => this.openReturnLobbyConfirm());
 
-    if (mathGame && mathFrame !== undefined) this.runMathClock(mathGame.mathEndsAt, state.room.level);
+    if (lanePaused && match.reconnectEndsAt) this.runReconnectClock(match.reconnectEndsAt);
+    else if (mathGame && mathFrame !== undefined) this.runMathClock(mathGame.mathEndsAt, state.room.level);
     else if (activePlayer && activeGame && match.currentPlayerId === activePlayer.id && !activeGame.complete) this.runShotClock(match.turnEndsAt);
 
     if (match.complete) {
@@ -225,11 +230,29 @@ export class LiveSpectatorScene extends BaseBowlingScene {
     update();
   }
 
+  private runReconnectClock(reconnectEndsAt: number): void {
+    cancelAnimationFrame(this.reconnectClockFrame);
+    this.reconnectClockFrame = 0;
+    const update = () => {
+      if (!this.ui) return;
+      const clock = this.ui.querySelector<HTMLElement>('#disconnect-reconnect-clock');
+      if (!clock) return;
+      const remainingMs = Math.max(0, reconnectEndsAt - Date.now());
+      const seconds = Math.ceil(remainingMs / 1000);
+      clock.textContent = remainingMs > 0 ? String(seconds) : '0';
+      clock.classList.toggle('urgent', seconds <= 5);
+      if (remainingMs > 0) this.reconnectClockFrame = requestAnimationFrame(update);
+    };
+    update();
+  }
+
   private stopClocks(): void {
     cancelAnimationFrame(this.shotClockFrame);
     cancelAnimationFrame(this.mathClockFrame);
+    cancelAnimationFrame(this.reconnectClockFrame);
     this.shotClockFrame = 0;
     this.mathClockFrame = 0;
+    this.reconnectClockFrame = 0;
   }
 
   private async playSpectatorShot(shot: SpectatorShot): Promise<void> {
@@ -370,6 +393,17 @@ export class LiveSpectatorScene extends BaseBowlingScene {
   }
 }
 
+function renderReconnectPanel(name: string): string {
+  return `<div class="disconnect-reconnect-panel" role="status" aria-live="polite">
+    <div class="disconnect-reconnect-icon">📡</div>
+    <div class="disconnect-reconnect-copy">
+      <strong>${escapeHtml(name)} disconnected — waiting for reconnection…</strong>
+      <span>This live lane is paused. If they do not return within 20 seconds, the connected opponent wins by forfeit.</span>
+    </div>
+    <div class="disconnect-reconnect-countdown"><strong id="disconnect-reconnect-clock">20</strong><small>SECONDS</small></div>
+  </div>`;
+}
+
 function renderGlobalSpectatorPanel(
   player: PlayerSummary | null,
   game: BowlerScorecard | undefined,
@@ -447,6 +481,9 @@ function watchedMatchFingerprint(state: TournamentState, matchId: string): strin
     complete: match.complete,
     winnerId: match.winnerId,
     turnEndsAt: match.turnEndsAt,
+    disconnectedPlayerId: match.disconnectedPlayerId,
+    reconnectEndsAt: match.reconnectEndsAt,
+    forfeitPlayerId: match.forfeitPlayerId,
     games: match.games
   });
 }

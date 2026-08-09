@@ -2023,3 +2023,232 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none !important;
   .spectator-guided-calculation strong { font-size: 14px; }
   .lane-live-action { min-width: 105px; }
 }
+
+/* ===== v0.7.1 matchup carousel navigation ===== */
+.lane-carousel {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+}
+.lane-carousel .lane-track {
+  flex: 1;
+  min-width: 0;
+  padding-left: 54px;
+  padding-right: 54px;
+}
+/* Keep the top label truthful: when there is spare room, the Championship
+   Lane occupies the right-hand end instead of sitting under LOWEST LANE. */
+.lane-card.championship { margin-left: auto; }
+.lane-nav-btn {
+  position: absolute;
+  top: 50%;
+  z-index: 18;
+  width: 44px;
+  height: 76px;
+  display: grid;
+  place-items: center;
+  border: 3px solid rgba(255,255,255,.82);
+  border-radius: 18px;
+  background: rgba(57,24,82,.94);
+  color: #ffe56f;
+  box-shadow: 0 7px 18px rgba(13,4,23,.34), inset 0 0 0 2px rgba(255,229,111,.12);
+  font-size: 24px;
+  font-weight: 1000;
+  cursor: pointer;
+  transform: translateY(-50%);
+  transition: transform .12s ease, filter .12s ease, opacity .12s ease;
+  touch-action: manipulation;
+}
+.lane-nav-prev { left: 4px; }
+.lane-nav-next { right: 4px; }
+.lane-nav-btn:hover:not(:disabled) { filter: brightness(1.14); transform: translateY(-50%) scale(1.04); }
+.lane-nav-btn:active:not(:disabled) { transform: translateY(-50%) scale(.96); }
+.lane-nav-btn:disabled { opacity: .24; cursor: default; filter: grayscale(.35); }
+
+@media (orientation: portrait) {
+  .lane-carousel .lane-track { padding-left: 45px; padding-right: 45px; }
+  .lane-nav-btn { width: 37px; height: 66px; border-radius: 15px; font-size: 20px; }
+  .lane-nav-prev { left: 2px; }
+  .lane-nav-next { right: 2px; }
+}
+
+/* ===== v0.7.2 leaderboard page navigation ===== */
+.leaderboard-scroll-shell {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  gap: 5px;
+}
+.leaderboard-list {
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 0;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+.leaderboard-list::-webkit-scrollbar { width: 0; height: 0; display: none; }
+.leaderboard-page-btn {
+  width: 100%;
+  height: 31px;
+  display: grid;
+  place-items: center;
+  border: 2px solid rgba(94,43,113,.24);
+  border-radius: 11px;
+  background: #633483;
+  color: #ffe56f;
+  box-shadow: 0 3px 0 #351747;
+  font-size: 18px;
+  line-height: 1;
+  font-weight: 1000;
+  cursor: pointer;
+  transition: transform .12s ease, filter .12s ease, opacity .12s ease;
+  touch-action: manipulation;
+}
+.leaderboard-page-btn:hover:not(:disabled) { filter: brightness(1.12); transform: translateY(-1px); }
+.leaderboard-page-btn:active:not(:disabled) { transform: translateY(2px); box-shadow: 0 1px 0 #351747; }
+.leaderboard-page-btn:disabled { opacity: .22; cursor: default; filter: grayscale(.35); }
+.leaderboard-range {
+  min-height: 15px;
+  display: grid;
+  place-items: center;
+  color: #7b5b82;
+  font-size: 9px;
+  line-height: 1;
+  font-weight: 1000;
+  letter-spacing: .35px;
+  white-space: nowrap;
+}
+
+/* Touch-first devices already have natural vertical swipe scrolling. Keep the
+   range indicator but reclaim the arrow space for more student names. */
+@media (hover: none) and (pointer: coarse) {
+  .leaderboard-scroll-shell { grid-template-rows: minmax(0, 1fr) auto; }
+  .leaderboard-page-btn { display: none; }
+}
+
+@media (orientation: portrait) {
+  .leaderboard-page-btn { height: 28px; font-size: 16px; }
+  .leaderboard-range { font-size: 8px; }
+}
+
+/* v0.7.4 — Dodeca-Gems-style 20-second disconnect grace */
+.turn-callout.disconnect-paused {
+  background: linear-gradient(90deg, rgba(255, 214, 92, .96), rgba(255, 238, 170, .98));
+  border-color: rgba(177, 112, 22, .5);
+  color: #4b2a5d;
+}
+
+.disconnect-reconnect-panel {
+  min-height: 112px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 18px;
+  border: 2px solid rgba(224, 161, 41, .52);
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(255, 248, 210, .98), rgba(255, 225, 128, .96));
+  box-shadow: inset 0 0 0 2px rgba(255,255,255,.45);
+  color: #4b2a5d;
+}
+
+.disconnect-reconnect-icon {
+  font-size: 34px;
+  line-height: 1;
+}
+
+.disconnect-reconnect-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.disconnect-reconnect-copy strong {
+  font-size: 15px;
+  line-height: 1.15;
+}
+
+.disconnect-reconnect-copy span {
+  font-size: 11px;
+  line-height: 1.25;
+  font-weight: 800;
+  color: #76536f;
+}
+
+.disconnect-reconnect-countdown {
+  min-width: 78px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 9px 12px;
+  border-radius: 15px;
+  background: #4a205f;
+  color: #fff3b0;
+  box-shadow: 0 6px 14px rgba(54, 20, 69, .18);
+}
+
+.disconnect-reconnect-countdown strong {
+  font-size: 32px;
+  line-height: .95;
+}
+
+.disconnect-reconnect-countdown strong.urgent {
+  color: #ffd15a;
+}
+
+.disconnect-reconnect-countdown small {
+  margin-top: 4px;
+  font-size: 9px;
+  font-weight: 950;
+  letter-spacing: .08em;
+}
+
+.forfeit-result-note {
+  max-width: 640px;
+  margin: 0 auto 12px;
+  padding: 10px 14px;
+  border: 2px solid rgba(221, 158, 37, .42);
+  border-radius: 14px;
+  background: rgba(255, 230, 139, .55);
+  color: #653566;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+@media (max-width: 760px) {
+  .disconnect-reconnect-panel {
+    min-height: 90px;
+    grid-template-columns: auto 1fr auto;
+    gap: 9px;
+    padding: 10px 11px;
+  }
+  .disconnect-reconnect-icon { font-size: 25px; }
+  .disconnect-reconnect-copy strong { font-size: 12px; }
+  .disconnect-reconnect-copy span { font-size: 9px; }
+  .disconnect-reconnect-countdown { min-width: 61px; padding: 7px 8px; }
+  .disconnect-reconnect-countdown strong { font-size: 25px; }
+}
+
+.forfeit-score-summary {
+  width: min(560px, 94%);
+  margin: 8px auto 16px;
+  display: grid;
+  gap: 5px;
+  padding: 14px 18px;
+  border: 2px solid rgba(221, 158, 37, .48);
+  border-radius: 17px;
+  background: rgba(255, 242, 190, .76);
+  color: #5c2e69;
+  text-align: center;
+}
+.forfeit-score-summary strong { font-size: 20px; }
+.forfeit-score-summary span { font-size: 14px; font-weight: 950; letter-spacing: .04em; }
+.forfeit-score-summary em { font-size: 10px; font-style: normal; font-weight: 850; color: #7b5a77; }

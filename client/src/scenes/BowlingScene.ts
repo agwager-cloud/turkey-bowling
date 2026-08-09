@@ -22,6 +22,7 @@ export class BowlingScene extends BaseBowlingScene {
   private meterFrame = 0;
   private shotClockFrame = 0;
   private mathClockFrame = 0;
+  private reconnectClockFrame = 0;
   private meterStartedAt = 0;
   private meterPosition = 0;
   private meterSpeedDivisor = 360;
@@ -39,6 +40,7 @@ export class BowlingScene extends BaseBowlingScene {
   private activeMathFrame: number | null = null;
   private spectatorPlayerId: string | null = null;
   private spectatorStandingBefore = 10;
+  private renderToken = 0;
 
   constructor() { super('BowlingScene'); }
 
@@ -52,6 +54,7 @@ export class BowlingScene extends BaseBowlingScene {
     this.stopMeter();
     this.stopShotClock();
     this.stopMathClock();
+    this.stopReconnectClock();
     this.simulator?.destroy();
     this.simulator = undefined;
 
@@ -98,6 +101,7 @@ export class BowlingScene extends BaseBowlingScene {
       network.on('scoreFeedback', (feedback) => this.handleScoreFeedback(feedback.correct, feedback.message)),
       network.on('spectatorShot', (shot) => void this.playSpectatorShot(shot)),
       network.on('spectatorShotResult', (result) => this.handleSpectatorShotResult(result)),
+      network.on('close', () => this.showToast('Connection lost — trying to rejoin your match for up to 20 seconds…')),
       network.on('error', ({ message }) => this.showToast(message))
     );
 
@@ -107,6 +111,7 @@ export class BowlingScene extends BaseBowlingScene {
       this.stopMeter();
       this.stopShotClock();
       this.stopMathClock();
+      this.stopReconnectClock();
       this.simulator?.destroy();
       this.simulator = undefined;
       this.cleanup.splice(0).forEach((fn) => fn());
@@ -117,10 +122,12 @@ export class BowlingScene extends BaseBowlingScene {
     if (!this.ui) return;
     const match = findMyMatch(state);
     if (!match) return;
+    this.renderToken++;
     this.lastMatchFingerprint = myMatchFingerprint(state);
     this.stopMeter();
     this.stopShotClock();
     this.stopMathClock();
+    this.stopReconnectClock();
     this.simulator?.destroy();
     this.simulator = undefined;
     this.controlPhase = 'ready';
@@ -139,6 +146,9 @@ export class BowlingScene extends BaseBowlingScene {
     const opponent = match.playerA.id === appState.playerId ? match.playerB : match.playerA;
     const myGame = match.games.find((game) => game.playerId === appState.playerId);
     const opponentGame = opponent ? match.games.find((game) => game.playerId === opponent.id) : null;
+    const lanePaused = Boolean(match.disconnectedPlayerId && match.reconnectEndsAt && !match.complete);
+    const disconnectedPlayer = lanePaused ? state.room.players.find((player) => player.id === match.disconnectedPlayerId) : null;
+    const disconnectedName = disconnectedPlayer?.name ?? (match.disconnectedPlayerId === opponent?.id ? opponent?.name : match.disconnectedPlayerId === me?.id ? me?.name : 'Opponent') ?? 'Opponent';
     const pendingMathFrame = state.room.level === 1 ? undefined : myGame?.pendingMathFrames[0];
     const nextMathFrame = pendingMathFrame ?? null;
     if (nextMathFrame !== this.activeMathFrame) {
@@ -154,13 +164,15 @@ export class BowlingScene extends BaseBowlingScene {
     // Even if the server has already assigned the next bowling turn to us, the
     // lane remains paused until the previous bowler finishes their maths. Do
     // not expose controls or start a local countdown during that pause.
-    const myTurn = rawMyTurn && !mathRequired && !opponentMathRequired;
-    const watchingOpponent = Boolean(opponent && !match.complete && !myTurn && (match.currentPlayerId === opponent.id || opponentMathRequired));
+    const myTurn = !lanePaused && rawMyTurn && !mathRequired && !opponentMathRequired;
+    const watchingOpponent = Boolean(!lanePaused && opponent && !match.complete && !myTurn && (match.currentPlayerId === opponent.id || opponentMathRequired));
     const displayedGame = watchingOpponent ? opponentGame : myGame;
     const standingPins = displayedGame?.standingPins ?? fallbackStandingPins(displayedGame ?? myGame);
-    const spectatorPanel = myTurn
-      ? renderPlayerShotControls(this.aim, this.hook)
-      : renderSpectatorTurnPanel(opponent, opponentGame, match, state.room.level, opponentMathFrame);
+    const spectatorPanel = lanePaused
+      ? renderReconnectPanel(disconnectedName)
+      : myTurn
+        ? renderPlayerShotControls(this.aim, this.hook)
+        : renderSpectatorTurnPanel(opponent, opponentGame, match, state.room.level, opponentMathFrame);
 
     this.ui.innerHTML = `
       <div class="bowling-shell interactive realistic-bowling-shell">
@@ -179,21 +191,20 @@ export class BowlingScene extends BaseBowlingScene {
               <canvas id="bowling-sim-canvas" class="bowling-sim-canvas${myTurn ? ' start-position-draggable' : ''}" aria-label="Perspective ten-pin bowling lane. Drag the ball left or right to choose your starting position."></canvas>
               <div class="sim-stage-hud">
                 <span id="sim-speed">BALL SPEED — KM/H</span>
-                <strong id="sim-shot-note">${myTurn ? 'DRAG BALL • SET LINE' : match.complete ? 'MATCH COMPLETE' : watchingOpponent ? `WATCHING ${escapeHtml(opponent?.name ?? 'OPPONENT')}` : 'WAITING'}</strong>
+                <strong id="sim-shot-note">${lanePaused ? 'MATCH PAUSED • RECONNECTING' : myTurn ? 'DRAG BALL • SET LINE' : match.complete ? 'MATCH COMPLETE' : watchingOpponent ? `WATCHING ${escapeHtml(opponent?.name ?? 'OPPONENT')}` : 'WAITING'}</strong>
               </div>
             </div>
-            <div class="turn-callout ${myTurn ? 'your-turn' : watchingOpponent ? 'spectating-turn' : ''}">
-              <span>${match.complete ? 'MATCH COMPLETE' : mathRequired && rawMyTurn ? 'SCORE CHECK REQUIRED' : opponentMathRequired ? `WAITING FOR ${escapeHtml(opponent?.name ?? 'OPPONENT')} TO FINISH MATHS` : myTurn ? `YOUR TURN — FRAME ${myGame?.currentFrame ?? 1}` : watchingOpponent ? `WATCHING ${escapeHtml(opponent?.name ?? 'OPPONENT')} — FRAME ${opponentGame?.currentFrame ?? 1}` : `WAITING FOR ${escapeHtml(opponent?.name ?? 'OPPONENT')}`}</span>
+            <div class="turn-callout ${lanePaused ? 'disconnect-paused' : myTurn ? 'your-turn' : watchingOpponent ? 'spectating-turn' : ''}">
+              <span>${match.complete ? 'MATCH COMPLETE' : lanePaused ? `${escapeHtml(disconnectedName)} DISCONNECTED — MATCH PAUSED` : mathRequired && rawMyTurn ? 'SCORE CHECK REQUIRED' : opponentMathRequired ? `WAITING FOR ${escapeHtml(opponent?.name ?? 'OPPONENT')} TO FINISH MATHS` : myTurn ? `YOUR TURN — FRAME ${myGame?.currentFrame ?? 1}` : watchingOpponent ? `WATCHING ${escapeHtml(opponent?.name ?? 'OPPONENT')} — FRAME ${opponentGame?.currentFrame ?? 1}` : `WAITING FOR ${escapeHtml(opponent?.name ?? 'OPPONENT')}`}</span>
               ${myTurn ? '<strong id="shot-clock" class="shot-clock">15s</strong>' : ''}
             </div>
             <div class="frame-progress">${myTurn || mathRequired ? (myGame ? frameStatus(myGame) : '') : (opponentGame ? `${escapeHtml(opponent?.name ?? 'Opponent')} • ${frameStatus(opponentGame)}` : '')}</div>
             ${spectatorPanel}
             ${opponentGame?.complete && !myGame?.complete ? '<div class="opponent-finished-note">Opponent has finished their game.</div>' : ''}
-            ${isHost ? '<button id="dev-finish" class="dev-btn" type="button">DEV: AUTO-FINISH MATCH</button>' : ''}
           </section>
         </main>
       </div>
-      ${mathRequired && myGame && pendingMathFrame !== undefined ? renderMathOverlay(state.room.level, myGame, pendingMathFrame) : ''}`;
+      ${!lanePaused && mathRequired && myGame && pendingMathFrame !== undefined ? renderMathOverlay(state.room.level, myGame, pendingMathFrame) : ''}`;
 
     const canvas = this.ui.querySelector<HTMLCanvasElement>('#bowling-sim-canvas');
     if (canvas) {
@@ -247,10 +258,11 @@ export class BowlingScene extends BaseBowlingScene {
     });
 
     this.ui.querySelector<HTMLButtonElement>('#shot-btn')?.addEventListener('click', () => this.handleShotButton(myGame, standingPins.length));
-    this.ui.querySelector<HTMLButtonElement>('#dev-finish')?.addEventListener('click', () => network.devFinishRound());
     this.ui.querySelector<HTMLButtonElement>('#host-matchups')?.addEventListener('click', () => this.scene.start('MatchupScene'));
     this.ui.querySelector<HTMLButtonElement>('#host-lobby')?.addEventListener('click', () => this.openReturnLobbyConfirm());
-    if (mathRequired && pendingMathFrame !== undefined) {
+    if (lanePaused && match.reconnectEndsAt) {
+      this.runReconnectClock(match.reconnectEndsAt);
+    } else if (mathRequired && pendingMathFrame !== undefined) {
       this.bindMathKeypad(pendingMathFrame);
       this.runMathClock(myGame?.mathEndsAt ?? null);
     } else if (watchingOpponent && opponentMathFrame !== undefined) {
@@ -501,6 +513,26 @@ export class BowlingScene extends BaseBowlingScene {
     this.shotClockFrame = 0;
   }
 
+  private runReconnectClock(reconnectEndsAt: number): void {
+    this.stopReconnectClock();
+    const update = () => {
+      if (!this.ui) return;
+      const clock = this.ui.querySelector<HTMLElement>('#disconnect-reconnect-clock');
+      if (!clock) return;
+      const remainingMs = Math.max(0, reconnectEndsAt - Date.now());
+      const seconds = Math.ceil(remainingMs / 1000);
+      clock.textContent = remainingMs > 0 ? String(seconds) : '0';
+      clock.classList.toggle('urgent', seconds <= 5);
+      if (remainingMs > 0) this.reconnectClockFrame = requestAnimationFrame(update);
+    };
+    update();
+  }
+
+  private stopReconnectClock(): void {
+    cancelAnimationFrame(this.reconnectClockFrame);
+    this.reconnectClockFrame = 0;
+  }
+
   private stopMeter(): void {
     cancelAnimationFrame(this.meterFrame);
     this.meterFrame = 0;
@@ -508,6 +540,7 @@ export class BowlingScene extends BaseBowlingScene {
 
   private async performShot(game: BowlerScorecard, standingBefore: number, shotConfig: BowlingShotConfig): Promise<void> {
     if (!this.simulator || !this.ui) return;
+    const shotRenderToken = this.renderToken;
     let impactPromise: Promise<void> | null = null;
     let celebrationShown = false;
     const anticipatedCelebration = clearedRackCelebration(game, standingBefore);
@@ -532,7 +565,7 @@ export class BowlingScene extends BaseBowlingScene {
       this.showToast(error instanceof Error ? error.message : 'The bowling shot could not be completed.');
       return;
     }
-    if (!this.scene.isActive() || !this.ui) return;
+    if (!this.scene.isActive() || !this.ui || shotRenderToken !== this.renderToken) return;
 
     const speed = this.ui.querySelector<HTMLElement>('#sim-speed');
     const note = this.ui.querySelector<HTMLElement>('#sim-shot-note');
@@ -557,7 +590,7 @@ export class BowlingScene extends BaseBowlingScene {
     // Special bowling achievements get a little more screen time; ordinary
     // deliveries still advance quickly so the class pace stays high.
     await wait(celebration ? 1350 : 520);
-    if (!this.scene.isActive()) return;
+    if (!this.scene.isActive() || shotRenderToken !== this.renderToken) return;
     network.rollBall(result.knockedPins, result.speedKmh, result.gutter);
   }
 
@@ -748,6 +781,17 @@ function renderPlayerShotControls(aim: number, hook: number): string {
     <div id="sim-help" class="sim-help">Drag the ball left or right to choose where to stand. Then set a straight aim target and add hook. Press START APPROACH, then release in the small green zone. The meter changes speed every bowl.</div>`;
 }
 
+function renderReconnectPanel(name: string): string {
+  return `<div class="disconnect-reconnect-panel" role="status" aria-live="polite">
+    <div class="disconnect-reconnect-icon">📡</div>
+    <div class="disconnect-reconnect-copy">
+      <strong>${escapeHtml(name)} disconnected — waiting for reconnection…</strong>
+      <span>The match is paused. If they do not return within 20 seconds, they forfeit this match.</span>
+    </div>
+    <div class="disconnect-reconnect-countdown"><strong id="disconnect-reconnect-clock">20</strong><small>SECONDS</small></div>
+  </div>`;
+}
+
 function renderSpectatorTurnPanel(
   opponent: PlayerSummary | null,
   opponentGame: BowlerScorecard | null | undefined,
@@ -803,6 +847,9 @@ function myMatchFingerprint(state: TournamentState): string {
     complete: match.complete,
     winnerId: match.winnerId,
     turnEndsAt: match.turnEndsAt,
+    disconnectedPlayerId: match.disconnectedPlayerId,
+    reconnectEndsAt: match.reconnectEndsAt,
+    forfeitPlayerId: match.forfeitPlayerId,
     myGame,
     opponentFrames: opponentGame?.frames,
     opponentCurrentFrame: opponentGame?.currentFrame,

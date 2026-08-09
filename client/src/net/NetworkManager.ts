@@ -26,28 +26,24 @@ class NetworkManager {
   private socket: WebSocket | null = null;
   private listeners = new Map<keyof EventMap, Set<(payload: unknown) => void>>();
   private connectingPromise: Promise<void> | null = null;
+  private pendingPlayerName = '';
+  private pendingRoomCode = '';
+  private resumeCredentials: { name: string; roomCode: string } | null = null;
+  private graceReconnectActive = false;
+  private suppressNextReconnect = false;
 
   get isConnected(): boolean {
     return this.socket?.readyState === WebSocket.OPEN;
   }
 
-  async connect(): Promise<void> {
+  async connect(maxWaitMs = 60000): Promise<void> {
     if (this.isConnected) return;
     if (this.connectingPromise) return this.connectingPromise;
 
-    const configuredUrl = (import.meta.env.VITE_WS_URL as string | undefined)?.trim();
-    const localUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.hostname}:8080`;
-    const url = configuredUrl || (import.meta.env.DEV ? localUrl : '');
-
-    if (!url) {
-      throw new Error('Production WebSocket URL is not configured. Build the itch.io client with VITE_WS_URL set to the Render wss:// address.');
-    }
-    if (import.meta.env.PROD && !url.startsWith('wss://')) {
-      throw new Error('Production WebSocket URL must use secure WebSockets (wss://).');
-    }
+    const url = this.resolveUrl();
 
     this.connectingPromise = (async () => {
-      const deadline = Date.now() + 60000;
+      const deadline = Date.now() + maxWaitMs;
       let lastError = new Error('Could not connect to the game server.');
       while (Date.now() < deadline) {
         try {
@@ -66,7 +62,7 @@ class NetworkManager {
     return this.connectingPromise;
   }
 
-  private connectOnce(url: string): Promise<void> {
+  private connectOnce(url: string, attemptTimeoutMs = 8000): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const socket = new WebSocket(url);
       this.socket = socket;
@@ -79,7 +75,7 @@ class NetworkManager {
         try { socket.close(); } catch { /* ignore */ }
         reject(new Error(message));
       };
-      const timeout = window.setTimeout(() => fail('Connection attempt timed out.'), 8000);
+      const timeout = window.setTimeout(() => fail('Connection attempt timed out.'), attemptTimeoutMs);
 
       socket.onopen = () => {
         if (settled) return;
@@ -95,13 +91,26 @@ class NetworkManager {
         if (!opened) return fail('Could not connect to the game server.');
         if (this.socket === socket) this.socket = null;
         this.emit('close', undefined);
+        if (this.suppressNextReconnect) {
+          this.suppressNextReconnect = false;
+        } else {
+          void this.startGraceReconnect();
+        }
       };
       socket.onmessage = (event) => this.handleMessage(String(event.data));
     });
   }
 
-  createRoom(name: string, level: GameLevel): void { this.send({ type: 'create_room', name, level, deviceId: getDeviceId() }); }
-  joinRoom(name: string, roomCode: string): void { this.send({ type: 'join_room', name, roomCode, deviceId: getDeviceId() }); }
+  createRoom(name: string, level: GameLevel): void {
+    this.pendingPlayerName = name;
+    this.pendingRoomCode = '';
+    this.send({ type: 'create_room', name, level, deviceId: getDeviceId() });
+  }
+  joinRoom(name: string, roomCode: string): void {
+    this.pendingPlayerName = name;
+    this.pendingRoomCode = roomCode;
+    this.send({ type: 'join_room', name, roomCode, deviceId: getDeviceId() });
+  }
   setLevel(level: GameLevel): void { this.send({ type: 'set_level', level }); }
   kickPlayer(playerId: string): void { this.send({ type: 'kick_player', playerId }); }
   startMatch(): void { this.send({ type: 'start_match' }); }
@@ -114,6 +123,42 @@ class NetworkManager {
   watchMatch(matchId: string): void { this.send({ type: 'watch_match', matchId }); }
   stopWatchingMatch(): void { this.send({ type: 'stop_watching_match' }); }
   devFinishRound(): void { this.send({ type: 'dev_finish_round' }); }
+
+  private resolveUrl(): string {
+    const configuredUrl = (import.meta.env.VITE_WS_URL as string | undefined)?.trim();
+    const localUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.hostname}:8080`;
+    const url = configuredUrl || (import.meta.env.DEV ? localUrl : '');
+    if (!url) throw new Error('Production WebSocket URL is not configured. Build the itch.io client with VITE_WS_URL set to the Render wss:// address.');
+    if (import.meta.env.PROD && !url.startsWith('wss://')) throw new Error('Production WebSocket URL must use secure WebSockets (wss://).');
+    return url;
+  }
+
+  private async startGraceReconnect(): Promise<void> {
+    if (this.graceReconnectActive || !this.resumeCredentials || this.isConnected) return;
+    this.graceReconnectActive = true;
+    const credentials = { ...this.resumeCredentials };
+    const deadline = Date.now() + 18500;
+    const url = this.resolveUrl();
+
+    try {
+      while (!this.isConnected && Date.now() < deadline && this.resumeCredentials) {
+        try {
+          const remaining = deadline - Date.now();
+          await this.connectOnce(url, Math.max(1000, Math.min(3500, remaining)));
+        } catch {
+          if (Date.now() >= deadline) break;
+          await new Promise((resolve) => window.setTimeout(resolve, 650));
+        }
+      }
+      if (this.isConnected && this.resumeCredentials) {
+        this.pendingPlayerName = credentials.name;
+        this.pendingRoomCode = credentials.roomCode;
+        this.send({ type: 'join_room', name: credentials.name, roomCode: credentials.roomCode, deviceId: getDeviceId() });
+      }
+    } finally {
+      this.graceReconnectActive = false;
+    }
+  }
 
   on<K extends keyof EventMap>(event: K, listener: Listener<K>): () => void {
     const set = this.listeners.get(event) ?? new Set();
@@ -134,7 +179,13 @@ class NetworkManager {
     let message: ServerMessage;
     try { message = JSON.parse(raw) as ServerMessage; } catch { return; }
     switch (message.type) {
-      case 'room_joined': { const { type: _type, ...payload } = message; this.emit('roomJoined', payload); break; }
+      case 'room_joined': {
+        const { type: _type, ...payload } = message;
+        if (this.pendingPlayerName) this.resumeCredentials = { name: this.pendingPlayerName, roomCode: message.room.code };
+        this.pendingRoomCode = message.room.code;
+        this.emit('roomJoined', payload);
+        break;
+      }
       case 'room_state': this.emit('roomState', message.room); break;
       case 'match_started': this.emit('matchStarted', message); break;
       case 'bowling_started': this.emit('bowlingStarted', toTournamentState(message)); break;
@@ -144,7 +195,11 @@ class NetworkManager {
       case 'score_feedback': this.emit('scoreFeedback', { correct: message.correct, frameIndex: message.frameIndex, message: message.message }); break;
       case 'spectator_shot': this.emit('spectatorShot', message.shot); break;
       case 'spectator_shot_result': this.emit('spectatorShotResult', message.result); break;
-      case 'kicked': this.emit('kicked', message.message); break;
+      case 'kicked':
+        this.resumeCredentials = null;
+        this.suppressNextReconnect = true;
+        this.emit('kicked', message.message);
+        break;
       case 'error': this.emit('error', { code: message.code, message: message.message }); break;
       default: break;
     }
