@@ -1,4 +1,4 @@
-# Turkey Bowling v0.6.0 — Deployment Ready
+# Turkey Bowling v0.6.1 — Production Endpoint Locked
 
 Multiplayer ten-pin bowling maths game built with Phaser/Vite on the client and Node.js/WebSockets on the server.
 
@@ -35,7 +35,7 @@ npm run build
 ```
 
 ## GitHub
-The complete project should be committed from the repository root. `node_modules`, `dist`, and production env files are ignored.
+The complete project should be committed from the repository root. `node_modules`, `dist`, and local-only env files are ignored. The public production WebSocket endpoint is committed in `client/.env.production`.
 
 ## Render server
 This repository includes `render.yaml` for the Node WebSocket server. The server:
@@ -55,16 +55,14 @@ Manual Render settings if you do not use the Blueprint:
 - Instance: Free (or your preferred paid instance)
 
 ## itch.io production client
-Do not build the itch.io ZIP until the Render service URL is known. The production build requires a secure WebSocket URL.
+The production WebSocket endpoint is locked to:
 
-Example PowerShell build after Render gives you the server address:
+`wss://turkey-bowling-server.onrender.com`
+
+It is stored in `client/.env.production`. To build the client and create the correctly structured itch.io ZIP in one command:
 ```powershell
 cd C:\Projects\bowling
-$env:VITE_WS_URL="wss://YOUR-RENDER-SERVICE.onrender.com"
-npm run build:client
-Remove-Item Env:\VITE_WS_URL
+npm run build:itch
 ```
 
-The uploadable itch.io ZIP must contain the **contents** of `client\dist`, with `index.html` at the ZIP root.
-
-A template is provided at `client/.env.production.example`, but the recommended deployment workflow is to supply `VITE_WS_URL` in the terminal when building so the real server URL does not need to be committed.
+The finished file will be created at `releases\turkey-bowling-itch-v0.6.1.zip`, with `index.html` at the ZIP root.
