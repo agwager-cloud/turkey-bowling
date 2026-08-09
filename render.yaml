@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: turkey-bowling-server
+    runtime: node
+    plan: free
+    region: singapore
+    rootDir: server
+    buildCommand: npm install && npm run build
+    startCommand: npm start
