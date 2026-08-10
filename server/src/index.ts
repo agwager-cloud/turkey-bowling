@@ -286,17 +286,103 @@ function kickPlayer(socket: WebSocket, targetId: string): void {
   const context = getContext(socket);
   if (!context) return;
   if (!context.player.isHost) return sendError(socket, 'HOST_ONLY', 'Only the host can manage players.');
-  if (context.room.status !== 'lobby') return sendError(socket, 'LOBBY_ONLY', 'Players can only be removed from the lobby in this prototype.');
-  const target = context.room.players.find((player) => player.id === targetId);
-  if (!target || target.isHost) return;
+  const { room } = context;
+  const target = room.players.find((player) => player.id === targetId);
+  if (!target || target.isHost || target.isBot) return;
 
-  if (!target.socket) return;
-  context.room.kickedNames.add(target.normalizedName);
-  send(target.socket, { type: 'kicked', message: 'The host removed you from the room. Change your name before rejoining.' });
-  membership.delete(target.socket);
-  context.room.players = context.room.players.filter((player) => player.id !== target.id);
-  target.socket.close(4001, 'Removed by host');
-  broadcastRoom(context.room);
+  room.kickedNames.add(target.normalizedName);
+  if (target.disconnectTimer) clearTimeout(target.disconnectTimer);
+  target.disconnectTimer = null;
+  target.disconnectEndsAt = null;
+  target.watchingMatchId = null;
+
+  const targetSocket = target.socket;
+  if (targetSocket) {
+    send(targetSocket, { type: 'kicked', message: 'The host removed you from the room. Change your name before rejoining.' });
+    membership.delete(targetSocket);
+    target.socket = null;
+    targetSocket.close(4001, 'Removed by host');
+  }
+
+  if (room.championId === target.id) room.championId = null;
+
+  if (room.status === 'bowling') {
+    const activeMatch = activeMatchForPlayer(room, target.id);
+    if (activeMatch) completeMatchAsHostRemoval(room, activeMatch, target.id);
+    room.players = room.players.filter((player) => player.id !== target.id);
+
+    clearBotTimer(room);
+    scheduleTurnTimeout(room);
+    scheduleMathTimeouts(room);
+    integrateLateJoinersDuringBowling(room);
+    broadcastBowling(room, 'bowling_state');
+    queueBotTurn(room);
+    if (room.matches.every((match) => match.complete)) scheduleFinishRound(room);
+    return;
+  }
+
+  room.players = room.players.filter((player) => player.id !== target.id);
+
+  if (room.status === 'matchup') {
+    const ordered = [...room.players]
+      .filter((player) => !player.isBot)
+      .sort((a, b) => a.ladderRank - b.ladderRank || a.joinedAt - b.joinedAt);
+    room.matches = createMatchesFromOrderedPlayers(room, ordered);
+    setRanksFromMatches(room, room.matches);
+    broadcast(room, {
+      type: 'match_started',
+      room: publicRoom(room),
+      round: room.round,
+      totalRounds: room.totalRounds,
+      phaseEndsAt: room.phaseEndsAt,
+      matchups: publicMatchups(room)
+    });
+    return;
+  }
+
+  if (room.status === 'round_result') {
+    const ordered = [...room.players]
+      .filter((player) => !player.isBot)
+      .sort((a, b) => a.ladderRank - b.ladderRank || a.joinedAt - b.joinedAt);
+    room.pendingMatches = createMatchesFromOrderedPlayers(room, ordered);
+    setRanksFromMatches(room, room.pendingMatches);
+    broadcast(room, {
+      type: 'round_complete',
+      room: publicRoom(room),
+      round: room.round,
+      totalRounds: room.totalRounds,
+      finalRound: false,
+      phaseEndsAt: room.phaseEndsAt ?? Date.now(),
+      matches: publicMatches(room),
+      movements: room.lastMovements
+    });
+    return;
+  }
+
+  broadcastRoom(room);
+}
+
+function completeMatchAsHostRemoval(room: Room, match: LaneMatch, removedPlayerId: string): void {
+  if (match.complete) return;
+  const opponentId = opponentOf(match, removedPlayerId);
+  if (!opponentId) return;
+
+  match.complete = true;
+  match.winnerId = opponentId;
+  match.loserId = removedPlayerId;
+  match.forfeitPlayerId = removedPlayerId;
+  match.currentPlayerId = null;
+  match.turnEndsAt = null;
+  match.shotInMotion = false;
+  match.disconnectedPlayerId = null;
+  match.reconnectEndsAt = null;
+  match.pausedTurnRemainingMs = null;
+  match.tieBreak = false;
+  for (const game of match.games.values()) {
+    game.mathEndsAt = null;
+    game.pausedMathRemainingMs = null;
+  }
+  clearWatchersForMatch(room, match.id);
 }
 
 function startTournament(socket: WebSocket): void {
@@ -725,7 +811,8 @@ function finishRound(room: Room): void {
   const outcome = new Map<string, 'win' | 'loss' | 'bye'>();
   const maxLane = Math.max(1, room.matches.length);
   const championshipMatch = room.matches.find((match) => match.championship);
-  if (championshipMatch?.winnerId) room.championId = championshipMatch.winnerId;
+  if (championshipMatch?.winnerId && findPlayer(room, championshipMatch.winnerId)) room.championId = championshipMatch.winnerId;
+  else if (room.championId && !findPlayer(room, room.championId)) room.championId = null;
 
   const chronologicalMatches = [...room.matches].sort((a, b) => a.createdAt - b.createdAt || a.lane - b.lane);
   for (const match of chronologicalMatches) {
