@@ -113,7 +113,7 @@ const PORT = Number(process.env.PORT || 8080);
 const MATCH_RESULT_HOLD_MS = 10000;
 const AUTO_MATCHUP_COUNTDOWN_MS = 5000;
 const SHOT_CLOCK_MS = 15000;
-const SHOT_RESULT_GRACE_MS = 6000;
+const SHOT_RESULT_GRACE_MS = 12000;
 const LEVEL_2_MATH_MS = 20000;
 const LEVEL_3_MATH_MS = 30000;
 const MATH_PENALTY_PERCENT = 5;
@@ -1217,13 +1217,20 @@ function handleTurnTimeouts(room: Room): void {
       continue;
     }
 
-    // Expiring the clock records a zero-pin delivery, ensuring one distracted
-    // student cannot hold up every other lane.
+    // Before release, the visible 15-second shot clock still records a zero-pin
+    // delivery if it expires. After release, however, the client needs time to
+    // finish the deterministic pin simulation and celebration before it reports
+    // the exact knocked pin IDs. Treat that as a separate result-grace timeout so
+    // a normal (but slightly slow) device/network is not incorrectly scored as 0.
+    const resultTimedOut = match.shotInMotion;
     match.shotInMotion = false;
     rollForPlayer(room, match, timedOutId, [], room.level !== 1 && !player?.isBot);
     resolveMatchIfComplete(match);
     armMatchShotClock(room, match);
-    if (player?.socket) sendError(player.socket, 'SHOT_CLOCK', '15-second shot clock expired — 0 pins recorded.');
+    if (player?.socket) {
+      if (resultTimedOut) sendError(player.socket, 'SHOT_RESULT_TIMEOUT', 'The released bowl did not report its pin result within 12 seconds — 0 pins recorded.');
+      else sendError(player.socket, 'SHOT_CLOCK', '15-second shot clock expired — 0 pins recorded.');
+    }
     changed = true;
   }
 
