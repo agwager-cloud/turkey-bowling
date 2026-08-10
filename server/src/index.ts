@@ -24,8 +24,8 @@ type ClientMessage =
   | { type: 'start_match' }
   | { type: 'begin_round' }
   | { type: 'return_to_lobby' }
-  | { type: 'shot_started'; shot: ShotVisualInput }
-  | { type: 'roll_ball'; knockedPins?: number[]; speedKmh?: number; gutter?: boolean }
+  | { type: 'shot_started'; matchId?: string; shot: ShotVisualInput }
+  | { type: 'roll_ball'; matchId?: string; knockedPins?: number[]; speedKmh?: number; gutter?: boolean }
   | { type: 'submit_score'; frameIndex: number; total: number }
   | { type: 'watch_match'; matchId: string }
   | { type: 'stop_watching_match' }
@@ -46,6 +46,7 @@ interface Player {
   watchingMatchId: string | null;
   disconnectEndsAt: number | null;
   disconnectTimer: ReturnType<typeof setTimeout> | null;
+  lateJoinPending: boolean;
 }
 
 interface BowlerGame {
@@ -64,6 +65,7 @@ interface BowlerGame {
 
 interface LaneMatch {
   id: string;
+  createdAt: number;
   lane: number;
   championship: boolean;
   playerAId: string;
@@ -169,8 +171,8 @@ wss.on('connection', (socket) => {
       case 'start_match': startTournament(socket); break;
       case 'begin_round': beginRound(socket); break;
       case 'return_to_lobby': returnToLobby(socket); break;
-      case 'shot_started': shotStarted(socket, message.shot); break;
-      case 'roll_ball': rollBall(socket, message.knockedPins, message.speedKmh, message.gutter); break;
+      case 'shot_started': shotStarted(socket, message.matchId, message.shot); break;
+      case 'roll_ball': rollBall(socket, message.matchId, message.knockedPins, message.speedKmh, message.gutter); break;
       case 'submit_score': submitScore(socket, message.frameIndex, message.total); break;
       case 'watch_match': watchMatch(socket, message.matchId); break;
       case 'stop_watching_match': stopWatchingMatch(socket); break;
@@ -239,23 +241,29 @@ function joinRoom(socket: WebSocket, rawName: string, deviceId: string, rawCode:
     return;
   }
 
-  if (room.players.length >= room.maxPlayers) return sendError(socket, 'ROOM_FULL', 'That room is full.');
+  if (room.players.filter((player) => !player.isBot).length >= room.maxPlayers) return sendError(socket, 'ROOM_FULL', 'That room is full.');
   if (room.players.some((player) => player.normalizedName === normalized)) return sendError(socket, 'DUPLICATE_NAME', 'That name is already being used in this room.');
   if (room.players.some((player) => player.deviceId === deviceId)) return sendError(socket, 'DUPLICATE_DEVICE', 'Only one player account can join this room from the same device.');
 
   const player = makePlayer(socket, name, deviceId, false);
+  player.lateJoinPending = room.status !== 'lobby';
   room.players.push(player);
   membership.set(socket, { roomCode: code, playerId: player.id });
 
-  // A student may join after the ladder has started. They are not inserted into
-  // an active LaneMatch; they arrive on Class Matchups as a spectator and are
-  // included by the next matchmaking cycle. If the class is already on the
-  // result hold, rebuild the pending pairings so the late joiner is included in
-  // the immediately upcoming set rather than waiting an extra full game.
-  if (room.status === 'round_result' && room.pendingMatches.length > 0) {
+  // Late joiners should enter the live ladder as soon as a sensible opponent is
+  // available. During bowling this can replace the host's Turkey Bot immediately,
+  // pair two late joiners together on a new lowest lane, or pair a late joiner
+  // with a human whose current match has already finished. No one has to wait for
+  // every other lane in the class to finish first.
+  if (room.status === 'bowling') {
+    integrateLateJoinersDuringBowling(room);
+  } else if (room.status === 'matchup') {
+    integrateLateJoinersDuringMatchup(room);
+  } else if (room.status === 'round_result' && room.pendingMatches.length > 0) {
     const ordered = [...room.players].sort((a, b) => a.ladderRank - b.ladderRank || a.joinedAt - b.joinedAt);
     room.pendingMatches = createMatchesFromOrderedPlayers(room, ordered);
     setRanksFromMatches(room, room.pendingMatches);
+    room.players.forEach((candidate) => { candidate.lateJoinPending = false; });
   }
 
   send(socket, roomJoinedPayload(room, player.id));
@@ -297,8 +305,7 @@ function startTournament(socket: WebSocket): void {
   const { room, player } = context;
   if (!player.isHost) return sendError(socket, 'HOST_ONLY', 'Only the host can create the first matchups.');
   if (room.status !== 'lobby') return;
-  if (room.players.length === 1) room.players.push(makeBotPlayer());
-  if (room.players.length < 2) return sendError(socket, 'NEED_PLAYERS', 'At least 2 players are required to create matchups.');
+  if (room.players.length < 1) return sendError(socket, 'NEED_PLAYERS', 'At least 1 player is required to create matchups.');
 
   room.players.forEach((p) => {
     p.wins = 0;
@@ -396,13 +403,14 @@ function beginBowling(room: Room): void {
   else queueBotTurn(room);
 }
 
-function shotStarted(socket: WebSocket, rawShot: ShotVisualInput): void {
+function shotStarted(socket: WebSocket, rawMatchId: string | undefined, rawShot: ShotVisualInput): void {
   const context = getContext(socket);
   if (!context) return;
   const { room, player } = context;
   if (room.status !== 'bowling') return;
-  const match = room.matches.find((candidate) => candidate.playerAId === player.id || candidate.playerBId === player.id);
+  const match = activeMatchForPlayer(room, player.id);
   if (!match || match.complete || match.disconnectedPlayerId || match.currentPlayerId !== player.id || match.shotInMotion) return;
+  if (rawMatchId && rawMatchId !== match.id) return; // stale delivery from a bot/late-join replacement
   const game = match.games.get(player.id);
   if (matchHasPendingMath(match)) return sendError(socket, 'MATH_REQUIRED', 'Wait until the required score calculation is complete before the next bowl.');
 
@@ -428,13 +436,14 @@ function shotStarted(socket: WebSocket, rawShot: ShotVisualInput): void {
   scheduleTurnTimeout(room);
 }
 
-function rollBall(socket: WebSocket, submittedKnockedPins?: number[], rawSpeedKmh?: number, rawGutter?: boolean): void {
+function rollBall(socket: WebSocket, rawMatchId: string | undefined, submittedKnockedPins?: number[], rawSpeedKmh?: number, rawGutter?: boolean): void {
   const context = getContext(socket);
   if (!context) return;
   const { room, player } = context;
   if (room.status !== 'bowling') return sendError(socket, 'NOT_BOWLING', 'Wait for the bowling round to begin.');
-  const match = room.matches.find((candidate) => candidate.playerAId === player.id || candidate.playerBId === player.id);
+  const match = activeMatchForPlayer(room, player.id);
   if (!match || match.complete) return;
+  if (rawMatchId && rawMatchId !== match.id) return; // ignore a result belonging to the match that was just replaced
   if (match.disconnectedPlayerId) return sendError(socket, 'OPPONENT_RECONNECTING', 'This lane is paused while the disconnected player has 20 seconds to rejoin.');
   if (match.currentPlayerId !== player.id) return sendError(socket, 'NOT_YOUR_TURN', 'Wait for your opponent to finish this frame.');
   const game = match.games.get(player.id);
@@ -452,6 +461,7 @@ function rollBall(socket: WebSocket, submittedKnockedPins?: number[], rawSpeedKm
   });
   resolveMatchIfComplete(match);
   if (match.complete) clearWatchersForMatch(room, match.id);
+  integrateLateJoinersDuringBowling(room);
   armMatchShotClock(room, match);
   broadcastBowling(room, 'bowling_state');
   scheduleTurnTimeout(room);
@@ -467,7 +477,7 @@ function submitScore(socket: WebSocket, rawFrameIndex: number, rawTotal: number)
   if (room.level === 1) return sendError(socket, 'AUTO_SCORING', 'Level 1 scores automatically.');
   if (room.status !== 'bowling') return sendError(socket, 'NOT_BOWLING', 'Scoring is only available during the bowling match.');
 
-  const match = room.matches.find((candidate) => candidate.playerAId === player.id || candidate.playerBId === player.id);
+  const match = activeMatchForPlayer(room, player.id) ?? latestMatchForPlayer(room, player.id);
   const game = match?.games.get(player.id);
   if (!match || !game) return;
   if (match.disconnectedPlayerId) return sendError(socket, 'OPPONENT_RECONNECTING', 'This lane is paused while the disconnected player has 20 seconds to rejoin.');
@@ -495,6 +505,7 @@ function submitScore(socket: WebSocket, rawFrameIndex: number, rawTotal: number)
   send(socket, { type: 'score_feedback', correct: true, frameIndex: expectedFrame, message: 'Correct!' });
 
   resolveMatchIfComplete(match);
+  integrateLateJoinersDuringBowling(room);
   // A lane is paused while either bowler has a required maths task. Once the
   // task is resolved, arm a fresh 15-second clock for whoever actually bowls
   // next (which may be the opponent rather than the player who did the maths).
@@ -515,7 +526,7 @@ function watchMatch(socket: WebSocket, rawMatchId: string): void {
   const watched = room.matches.find((match) => match.id === matchId);
   if (!watched || watched.complete || !watched.playerBId) return sendError(socket, 'MATCH_NOT_LIVE', 'That lane is no longer live.');
 
-  const ownMatch = room.matches.find((match) => match.playerAId === player.id || match.playerBId === player.id);
+  const ownMatch = activeMatchForPlayer(room, player.id);
   if (!player.isHost && ownMatch && !ownMatch.complete) {
     return sendError(socket, 'OWN_MATCH_ACTIVE', 'Your own bowling match is active. Return to your lane before spectating another match.');
   }
@@ -697,6 +708,12 @@ function scheduleFinishRound(room: Room): void {
 
 function finishRound(room: Room): void {
   if (!rooms.has(room.code) || room.status !== 'bowling') return;
+  // A late join may have created a new live lane during the short result hold.
+  // Never close the class cycle while any real matchup is still bowling.
+  if (room.matches.some((match) => !match.complete)) {
+    room.timer = null;
+    return;
+  }
   clearRoomTimer(room);
   clearBotTimer(room);
   clearTurnTimer(room);
@@ -710,15 +727,16 @@ function finishRound(room: Room): void {
   const championshipMatch = room.matches.find((match) => match.championship);
   if (championshipMatch?.winnerId) room.championId = championshipMatch.winnerId;
 
-  for (const match of room.matches) {
-    oldLane.set(match.playerAId, match.lane);
+  const chronologicalMatches = [...room.matches].sort((a, b) => a.createdAt - b.createdAt || a.lane - b.lane);
+  for (const match of chronologicalMatches) {
+    if (!oldLane.has(match.playerAId)) oldLane.set(match.playerAId, match.lane);
     if (!match.playerBId) {
       // A bye does not award a leaderboard point. Keep the player near their current lane.
       outcome.set(match.playerAId, 'bye');
       targetRanks.set(match.playerAId, match.lane);
       continue;
     }
-    oldLane.set(match.playerBId, match.lane);
+    if (!oldLane.has(match.playerBId)) oldLane.set(match.playerBId, match.lane);
     if (match.winnerId) {
       outcome.set(match.winnerId, 'win');
       targetRanks.set(match.winnerId, Math.min(maxLane, match.lane + 1));
@@ -826,16 +844,34 @@ function finishTournament(room: Room): void {
 }
 
 function createOpeningMatches(room: Room): LaneMatch[] {
-  return createMatchesFromOrderedPlayers(room, shuffle([...room.players]));
+  const humans = room.players.filter((player) => !player.isBot);
+  return createMatchesFromOrderedPlayers(room, shuffle([...humans]));
 }
 
 function createMatchesFromOrderedPlayers(room: Room, ordered: Player[]): LaneMatch[] {
-  const players = ordered.filter((player) => player.isBot || player.socket?.readyState === WebSocket.OPEN);
+  // Bots are temporary fillers, never permanent ladder members. Rebuild the
+  // human list for every new class cycle and add exactly one Turkey Bot only
+  // when an odd human count would otherwise leave the host without a match.
+  room.players = room.players.filter((player) => !player.isBot);
+  const players = ordered.filter((player) => !player.isBot && player.socket?.readyState === WebSocket.OPEN);
+  const host = players.find((player) => player.isHost);
+  if (players.length % 2 === 1 && host) {
+    const hostIndex = players.findIndex((player) => player.id === host.id);
+    const bot = makeBotPlayer();
+    room.players.push(bot);
+    // Remove the host and reinsert HOST + BOT together on an even pair boundary.
+    // This guarantees the filler belongs to the host regardless of whether the
+    // host originally landed in the first or second slot of a pair.
+    players.splice(hostIndex, 1);
+    const pairBoundary = Math.min(hostIndex - (hostIndex % 2), players.length);
+    players.splice(pairBoundary, 0, host, bot);
+  }
   const matches: LaneMatch[] = [];
   const laneCount = Math.ceil(players.length / 2);
   let lane = 1;
 
-  // If odd, put the bye on the lowest lane so the Championship Lane is always contested when possible.
+  // A host should normally absorb an odd-number filler via Turkey Bot. Keep the
+  // bye fallback only for the unlikely case that no connected host exists.
   if (players.length % 2 === 1) {
     const bye = players.shift()!;
     matches.push(makeLaneMatch(lane++, laneCount, bye, null));
@@ -845,7 +881,162 @@ function createMatchesFromOrderedPlayers(room: Room, ordered: Player[]): LaneMat
     const b = players.shift() ?? null;
     matches.push(makeLaneMatch(lane++, laneCount, a, b));
   }
+  matches.forEach((match) => {
+    const a = findPlayer(room, match.playerAId);
+    const b = match.playerBId ? findPlayer(room, match.playerBId) : null;
+    if (a) a.lateJoinPending = false;
+    if (b) b.lateJoinPending = false;
+  });
   return matches;
+}
+
+function activeMatchForPlayer(room: Room, playerId: string): LaneMatch | undefined {
+  // A late joiner can create a second match for a player whose earlier match in
+  // the current class cycle has already finished. Always prefer the newest live
+  // match; fall back to the newest completed match for result/spectator context.
+  for (let index = room.matches.length - 1; index >= 0; index--) {
+    const match = room.matches[index];
+    if (!match.complete && (match.playerAId === playerId || match.playerBId === playerId)) return match;
+  }
+  return undefined;
+}
+
+function latestMatchForPlayer(room: Room, playerId: string): LaneMatch | undefined {
+  return activeMatchForPlayer(room, playerId)
+    ?? room.matches
+      .filter((match) => match.playerAId === playerId || match.playerBId === playerId)
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+}
+
+function availableHumanForLateJoin(room: Room, pending: Player): Player | undefined {
+  const available = room.players.filter((candidate) =>
+    !candidate.isBot
+    && candidate.id !== pending.id
+    && candidate.socket?.readyState === WebSocket.OPEN
+    && !activeMatchForPlayer(room, candidate.id)
+  );
+  return available.find((candidate) => candidate.isHost)
+    ?? available.find((candidate) => candidate.lateJoinPending)
+    ?? available.sort((a, b) => a.joinedAt - b.joinedAt)[0];
+}
+
+function hostBotMatch(room: Room): { match: LaneMatch; host: Player; bot: Player } | null {
+  for (const match of room.matches) {
+    if (match.complete || !match.playerBId || match.disconnectedPlayerId || match.shotInMotion || matchHasPendingMath(match)) continue;
+    const a = findPlayer(room, match.playerAId);
+    const b = findPlayer(room, match.playerBId);
+    if (!a || !b) continue;
+    if (a.isHost && b.isBot) return { match, host: a, bot: b };
+    if (b.isHost && a.isBot) return { match, host: b, bot: a };
+  }
+  return null;
+}
+
+function replaceHostBotWithLateJoiner(room: Room, latePlayer: Player): boolean {
+  const filler = hostBotMatch(room);
+  if (!filler || filler.host.id === latePlayer.id) return false;
+  const index = room.matches.findIndex((candidate) => candidate.id === filler.match.id);
+  if (index < 0) return false;
+
+  clearWatchersForMatch(room, filler.match.id);
+  clearBotTimer(room);
+  room.players = room.players.filter((candidate) => candidate.id !== filler.bot.id);
+  const replacement = makeLaneMatch(filler.match.lane, room.matches.length, filler.host, latePlayer);
+  replacement.championship = filler.match.championship;
+  room.matches[index] = replacement;
+  filler.host.ladderRank = replacement.lane;
+  latePlayer.ladderRank = replacement.lane;
+  latePlayer.lateJoinPending = false;
+  armMatchShotClock(room, replacement);
+  return true;
+}
+
+function addLateJoinLane(room: Room, a: Player, b: Player): LaneMatch {
+  // New late-join lanes are inserted at the LOWEST end so the existing
+  // Championship Lane remains the right-most/highest lane. Shift the visible
+  // lane numbers of current matches one place to the right without touching any
+  // in-progress scores, pins, timers or match ownership.
+  for (const match of room.matches) match.lane += 1;
+  room.players.forEach((player) => {
+    const latest = latestMatchForPlayer(room, player.id);
+    if (latest) player.ladderRank = latest.lane;
+  });
+  const match = makeLaneMatch(1, room.matches.length + 1, a, b);
+  match.championship = false;
+  room.matches.unshift(match);
+  a.ladderRank = 1;
+  b.ladderRank = 1;
+  a.lateJoinPending = false;
+  b.lateJoinPending = false;
+  armMatchShotClock(room, match);
+  return match;
+}
+
+function integrateLateJoinersDuringBowling(room: Room): void {
+  if (room.status !== 'bowling') return;
+  let changed = false;
+
+  // First priority: a real student instantly replaces Turkey Bot in the host's
+  // filler lane. The partial bot game is discarded rather than granting a free
+  // leaderboard win; the host and new player begin a fresh 0-0 bowling match.
+  const firstPending = room.players
+    .filter((player) => player.lateJoinPending && !player.isBot && player.socket?.readyState === WebSocket.OPEN && !activeMatchForPlayer(room, player.id))
+    .sort((a, b) => a.joinedAt - b.joinedAt)[0];
+  if (firstPending && replaceHostBotWithLateJoiner(room, firstPending)) changed = true;
+
+  while (true) {
+    const pending = room.players
+      .filter((player) => player.lateJoinPending && !player.isBot && player.socket?.readyState === WebSocket.OPEN && !activeMatchForPlayer(room, player.id))
+      .sort((a, b) => a.joinedAt - b.joinedAt)[0];
+    if (!pending) break;
+    const opponent = availableHumanForLateJoin(room, pending);
+    if (!opponent) break;
+    addLateJoinLane(room, opponent, pending);
+    changed = true;
+  }
+
+  if (!changed) return;
+  clearRoomTimer(room); // cancel a pending all-lanes-finished transition
+  scheduleTurnTimeout(room);
+  scheduleMathTimeouts(room);
+  clearBotTimer(room);
+  broadcastBowling(room, 'bowling_state');
+  queueBotTurn(room);
+}
+
+function integrateLateJoinersDuringMatchup(room: Room): void {
+  if (room.status !== 'matchup') return;
+  let changed = false;
+  const pendingPlayers = room.players
+    .filter((player) => player.lateJoinPending && !player.isBot && player.socket?.readyState === WebSocket.OPEN)
+    .sort((a, b) => a.joinedAt - b.joinedAt);
+
+  for (const pending of pendingPlayers) {
+    if (room.matches.some((match) => match.playerAId === pending.id || match.playerBId === pending.id)) {
+      pending.lateJoinPending = false;
+      continue;
+    }
+    if (replaceHostBotWithLateJoiner(room, pending)) {
+      changed = true;
+      continue;
+    }
+    const opponent = availableHumanForLateJoin(room, pending);
+    if (opponent) {
+      addLateJoinLane(room, opponent, pending);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    broadcast(room, {
+      type: 'match_started',
+      room: publicRoom(room),
+      round: room.round,
+      totalRounds: room.totalRounds,
+      phaseEndsAt: room.phaseEndsAt,
+      matchups: publicMatchups(room)
+    });
+  }
 }
 
 function makeLaneMatch(lane: number, laneCount: number, a: Player, b: Player | null): LaneMatch {
@@ -854,6 +1045,7 @@ function makeLaneMatch(lane: number, laneCount: number, a: Player, b: Player | n
   if (b) games.set(b.id, newBowlerGame(b.id));
   return {
     id: randomUUID(),
+    createdAt: Date.now(),
     lane,
     championship: lane === laneCount,
     playerAId: a.id,
@@ -1063,6 +1255,7 @@ function publicPlayer(player: Player) {
 function publicMatchups(room: Room) {
   return room.matches.map((match) => ({
     id: match.id,
+    createdAt: match.createdAt,
     lane: match.lane,
     championship: match.championship,
     playerA: publicPlayerById(room, match.playerAId),
@@ -1137,7 +1330,8 @@ function makeBotPlayer(): Player {
     losses: 0,
     watchingMatchId: null,
     disconnectEndsAt: null,
-    disconnectTimer: null
+    disconnectTimer: null,
+    lateJoinPending: false
   };
 }
 
@@ -1163,6 +1357,7 @@ function queueBotTurn(room: Room): void {
     match.shotInMotion = false;
     rollForPlayer(room, match, bot.id, undefined, false);
     resolveMatchIfComplete(match);
+    integrateLateJoinersDuringBowling(room);
     armMatchShotClock(room, match);
     broadcastBowling(room, 'bowling_state');
     scheduleTurnTimeout(room);
@@ -1234,6 +1429,7 @@ function handleTurnTimeouts(room: Room): void {
     changed = true;
   }
 
+  if (changed) integrateLateJoinersDuringBowling(room);
   if (changed) broadcastBowling(room, 'bowling_state');
   scheduleMathTimeouts(room);
   if (room.matches.every((match) => match.complete)) scheduleFinishRound(room);
@@ -1286,6 +1482,7 @@ function handleMathTimeouts(room: Room): void {
     if (!match.complete && match.currentPlayerId) armMatchShotClock(room, match);
   }
 
+  if (changed) integrateLateJoinersDuringBowling(room);
   if (changed) broadcastBowling(room, 'bowling_state');
   scheduleTurnTimeout(room);
   if (room.matches.every((match) => match.complete)) scheduleFinishRound(room);
@@ -1405,10 +1602,16 @@ function reconnectPlayer(room: Room, player: Player, socket: WebSocket): void {
     scheduleTurnTimeout(room);
     scheduleMathTimeouts(room);
     queueBotTurn(room);
+  } else if (room.status === 'bowling') {
+    // The previous lane already forfeited, so treat this returning player like a
+    // late joiner and place them into the first sensible live matchup instead of
+    // making them wait for the whole class cycle to finish.
+    player.lateJoinPending = true;
+    integrateLateJoinersDuringBowling(room);
   }
 
-  // A player who reconnects after the grace period has already forfeited that
-  // match, but can still wait/spectate and be included in the next ladder cycle.
+  // During the result hold there is no active bowling lane to join, so include
+  // them in the immediately upcoming pairing set.
   if (room.status === 'round_result' && room.pendingMatches.length > 0) {
     const ordered = [...room.players].sort((a, b) => a.ladderRank - b.ladderRank || a.joinedAt - b.joinedAt);
     room.pendingMatches = createMatchesFromOrderedPlayers(room, ordered);
@@ -1458,6 +1661,7 @@ function forfeitDisconnectedPlayer(roomCode: string, playerId: string, matchId: 
   scheduleTurnTimeout(room);
   scheduleMathTimeouts(room);
   clearBotTimer(room);
+  integrateLateJoinersDuringBowling(room);
   queueBotTurn(room);
   if (room.matches.every((candidate) => candidate.complete)) scheduleFinishRound(room);
 }
@@ -1564,7 +1768,8 @@ function makePlayer(socket: WebSocket, name: string, deviceId: string, isHost: b
     losses: 0,
     watchingMatchId: null,
     disconnectEndsAt: null,
-    disconnectTimer: null
+    disconnectTimer: null,
+    lateJoinPending: false
   };
 }
 
