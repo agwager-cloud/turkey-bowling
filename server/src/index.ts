@@ -24,8 +24,8 @@ type ClientMessage =
   | { type: 'start_match' }
   | { type: 'begin_round' }
   | { type: 'return_to_lobby' }
-  | { type: 'shot_started'; matchId?: string; shot: ShotVisualInput }
-  | { type: 'roll_ball'; matchId?: string; knockedPins?: number[]; speedKmh?: number; gutter?: boolean }
+  | { type: 'shot_started'; matchId?: string; shotId?: string; shot: ShotVisualInput }
+  | { type: 'roll_ball'; matchId?: string; shotId?: string; knockedPins?: number[]; speedKmh?: number; gutter?: boolean }
   | { type: 'submit_score'; frameIndex: number; total: number }
   | { type: 'watch_match'; matchId: string }
   | { type: 'stop_watching_match' }
@@ -78,6 +78,7 @@ interface LaneMatch {
   tieBreak: boolean;
   turnEndsAt: number | null;
   shotInMotion: boolean;
+  activeShotId: string | null;
   disconnectedPlayerId: string | null;
   reconnectEndsAt: number | null;
   pausedTurnRemainingMs: number | null;
@@ -171,8 +172,8 @@ wss.on('connection', (socket) => {
       case 'start_match': startTournament(socket); break;
       case 'begin_round': beginRound(socket); break;
       case 'return_to_lobby': returnToLobby(socket); break;
-      case 'shot_started': shotStarted(socket, message.matchId, message.shot); break;
-      case 'roll_ball': rollBall(socket, message.matchId, message.knockedPins, message.speedKmh, message.gutter); break;
+      case 'shot_started': shotStarted(socket, message.matchId, message.shotId, message.shot); break;
+      case 'roll_ball': rollBall(socket, message.matchId, message.shotId, message.knockedPins, message.speedKmh, message.gutter); break;
       case 'submit_score': submitScore(socket, message.frameIndex, message.total); break;
       case 'watch_match': watchMatch(socket, message.matchId); break;
       case 'stop_watching_match': stopWatchingMatch(socket); break;
@@ -374,6 +375,7 @@ function completeMatchAsHostRemoval(room: Room, match: LaneMatch, removedPlayerI
   match.currentPlayerId = null;
   match.turnEndsAt = null;
   match.shotInMotion = false;
+  match.activeShotId = null;
   match.disconnectedPlayerId = null;
   match.reconnectEndsAt = null;
   match.pausedTurnRemainingMs = null;
@@ -489,7 +491,7 @@ function beginBowling(room: Room): void {
   else queueBotTurn(room);
 }
 
-function shotStarted(socket: WebSocket, rawMatchId: string | undefined, rawShot: ShotVisualInput): void {
+function shotStarted(socket: WebSocket, rawMatchId: string | undefined, rawShotId: string | undefined, rawShot: ShotVisualInput): void {
   const context = getContext(socket);
   if (!context) return;
   const { room, player } = context;
@@ -504,6 +506,7 @@ function shotStarted(socket: WebSocket, rawMatchId: string | undefined, rawShot:
   // Once released, allow enough time for the 2.5D animation to settle and report
   // its authoritative pin IDs without letting a broken client stall the class.
   match.shotInMotion = true;
+  match.activeShotId = sanitizeShotId(rawShotId);
   match.turnEndsAt = Date.now() + SHOT_RESULT_GRACE_MS;
 
   const shot = sanitizeShotVisual(rawShot);
@@ -522,7 +525,7 @@ function shotStarted(socket: WebSocket, rawMatchId: string | undefined, rawShot:
   scheduleTurnTimeout(room);
 }
 
-function rollBall(socket: WebSocket, rawMatchId: string | undefined, submittedKnockedPins?: number[], rawSpeedKmh?: number, rawGutter?: boolean): void {
+function rollBall(socket: WebSocket, rawMatchId: string | undefined, rawShotId: string | undefined, submittedKnockedPins?: number[], rawSpeedKmh?: number, rawGutter?: boolean): void {
   const context = getContext(socket);
   if (!context) return;
   const { room, player } = context;
@@ -530,6 +533,11 @@ function rollBall(socket: WebSocket, rawMatchId: string | undefined, submittedKn
   const match = activeMatchForPlayer(room, player.id);
   if (!match || match.complete) return;
   if (rawMatchId && rawMatchId !== match.id) return; // ignore a result belonging to the match that was just replaced
+  // A pin result is valid only for the single delivery the server currently has
+  // in flight. This blocks delayed/duplicate results from an abandoned animation
+  // being applied to the player's next ball or even the next frame.
+  if (!match.shotInMotion) return;
+  if (match.activeShotId && rawShotId !== match.activeShotId) return;
   if (match.disconnectedPlayerId) return sendError(socket, 'OPPONENT_RECONNECTING', 'This lane is paused while the disconnected player has 20 seconds to rejoin.');
   if (match.currentPlayerId !== player.id) return sendError(socket, 'NOT_YOUR_TURN', 'Wait for your opponent to finish this frame.');
   const game = match.games.get(player.id);
@@ -537,6 +545,7 @@ function rollBall(socket: WebSocket, rawMatchId: string | undefined, submittedKn
   if (matchHasPendingMath(match)) return sendError(socket, 'MATH_REQUIRED', 'Wait until the required score calculation is complete before the next bowl.');
 
   match.shotInMotion = false;
+  match.activeShotId = null;
   const actualKnockedPins = sanitizeKnockedPins(game, submittedKnockedPins ?? []);
   const speedKmh = Number.isFinite(Number(rawSpeedKmh)) ? Math.max(0, Math.min(80, Number(rawSpeedKmh))) : 0;
   const gutter = Boolean(rawGutter);
@@ -676,6 +685,12 @@ function rollForPlayer(room: Room, match: LaneMatch, playerId: string, submitted
   } else {
     match.currentPlayerId = playerId;
   }
+}
+
+function sanitizeShotId(raw: string | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  const value = raw.trim();
+  return value && value.length <= 96 ? value : null;
 }
 
 function sanitizeShotVisual(raw: ShotVisualInput | undefined): ShotVisualInput | null {
@@ -1145,6 +1160,7 @@ function makeLaneMatch(lane: number, laneCount: number, a: Player, b: Player | n
     tieBreak: false,
     turnEndsAt: null,
     shotInMotion: false,
+    activeShotId: null,
     disconnectedPlayerId: null,
     reconnectEndsAt: null,
     pausedTurnRemainingMs: null,
@@ -1442,6 +1458,7 @@ function queueBotTurn(room: Room): void {
     if (!bot?.isBot) return;
 
     match.shotInMotion = false;
+    match.activeShotId = null;
     rollForPlayer(room, match, bot.id, undefined, false);
     resolveMatchIfComplete(match);
     integrateLateJoinersDuringBowling(room);
@@ -1457,6 +1474,7 @@ function queueBotTurn(room: Room): void {
 
 function armMatchShotClock(room: Room, match: LaneMatch): void {
   match.shotInMotion = false;
+  match.activeShotId = null;
   if (room.status !== 'bowling' || match.complete || match.disconnectedPlayerId || !match.currentPlayerId) {
     match.turnEndsAt = null;
     return;
@@ -1506,12 +1524,19 @@ function handleTurnTimeouts(room: Room): void {
     // a normal (but slightly slow) device/network is not incorrectly scored as 0.
     const resultTimedOut = match.shotInMotion;
     match.shotInMotion = false;
-    rollForPlayer(room, match, timedOutId, [], room.level !== 1 && !player?.isBot);
-    resolveMatchIfComplete(match);
-    armMatchShotClock(room, match);
-    if (player?.socket) {
-      if (resultTimedOut) sendError(player.socket, 'SHOT_RESULT_TIMEOUT', 'The released bowl did not report its pin result within 12 seconds — 0 pins recorded.');
-      else sendError(player.socket, 'SHOT_CLOCK', '15-second shot clock expired — 0 pins recorded.');
+    match.activeShotId = null;
+    if (resultTimedOut) {
+      // A released shot whose client result never arrives is a transport/render
+      // failure, not a genuine zero. Preserve the score, frame and standing pins
+      // and give the same bowler a fresh 15-second attempt. Any late result from
+      // the abandoned delivery is rejected by shotInMotion/activeShotId checks.
+      armMatchShotClock(room, match);
+      if (player?.socket) sendError(player.socket, 'SHOT_RESULT_RETRY', 'That bowl did not finish syncing. No score was recorded — please bowl again.');
+    } else {
+      rollForPlayer(room, match, timedOutId, [], room.level !== 1 && !player?.isBot);
+      resolveMatchIfComplete(match);
+      armMatchShotClock(room, match);
+      if (player?.socket) sendError(player.socket, 'SHOT_CLOCK', '15-second shot clock expired — 0 pins recorded.');
     }
     changed = true;
   }
@@ -1635,6 +1660,7 @@ function pauseMatchForDisconnect(room: Room, match: LaneMatch, player: Player): 
   // after reconnect rather than turning a network fault into a zero-pin result.
   if (match.shotInMotion) {
     match.shotInMotion = false;
+    match.activeShotId = null;
     match.pausedTurnRemainingMs = SHOT_CLOCK_MS;
   }
   for (const game of match.games.values()) {
@@ -1730,6 +1756,7 @@ function forfeitDisconnectedPlayer(roomCode: string, playerId: string, matchId: 
   match.reconnectEndsAt = null;
   match.pausedTurnRemainingMs = null;
   match.shotInMotion = false;
+  match.activeShotId = null;
   for (const game of match.games.values()) {
     game.mathEndsAt = null;
     game.pausedMathRemainingMs = null;
