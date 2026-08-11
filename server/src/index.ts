@@ -63,6 +63,12 @@ interface BowlerGame {
   pausedMathRemainingMs: number | null;
 }
 
+interface BowlOffRound {
+  round: number;
+  playerAScore: number;
+  playerBScore: number;
+}
+
 interface LaneMatch {
   id: string;
   createdAt: number;
@@ -76,6 +82,11 @@ interface LaneMatch {
   winnerId: string | null;
   loserId: string | null;
   tieBreak: boolean;
+  bowlOffActive: boolean;
+  bowlOffRound: number;
+  bowlOffPlayerAScore: number | null;
+  bowlOffPlayerBScore: number | null;
+  bowlOffHistory: BowlOffRound[];
   turnEndsAt: number | null;
   shotInMotion: boolean;
   activeShotId: string | null;
@@ -122,6 +133,7 @@ const LEVEL_3_MATH_MS = 30000;
 const MATH_PENALTY_PERCENT = 5;
 const DISCONNECT_GRACE_MS = 20000;
 const WEBSOCKET_HEARTBEAT_MS = 25000;
+const FULL_RACK_PINS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
 const rooms = new Map<string, Room>();
 const membership = new Map<WebSocket, { roomCode: string; playerId: string }>();
 
@@ -380,6 +392,9 @@ function completeMatchAsHostRemoval(room: Room, match: LaneMatch, removedPlayerI
   match.reconnectEndsAt = null;
   match.pausedTurnRemainingMs = null;
   match.tieBreak = false;
+  match.bowlOffActive = false;
+  match.bowlOffPlayerAScore = null;
+  match.bowlOffPlayerBScore = null;
   for (const game of match.games.values()) {
     game.mathEndsAt = null;
     game.pausedMathRemainingMs = null;
@@ -517,7 +532,7 @@ function shotStarted(socket: WebSocket, rawMatchId: string | undefined, rawShotI
         matchId: match.id,
         playerId: player.id,
         playerName: player.name,
-        standingPins: [...(game?.standingPins ?? [])],
+        standingPins: match.bowlOffActive ? [...FULL_RACK_PINS] : [...(game?.standingPins ?? [])],
         ...shot
       }
     });
@@ -546,10 +561,14 @@ function rollBall(socket: WebSocket, rawMatchId: string | undefined, rawShotId: 
 
   match.shotInMotion = false;
   match.activeShotId = null;
-  const actualKnockedPins = sanitizeKnockedPins(game, submittedKnockedPins ?? []);
+  const bowlOffDelivery = match.bowlOffActive;
+  const actualKnockedPins = bowlOffDelivery
+    ? sanitizeFullRackPins(submittedKnockedPins ?? [])
+    : sanitizeKnockedPins(game, submittedKnockedPins ?? []);
   const speedKmh = Number.isFinite(Number(rawSpeedKmh)) ? Math.max(0, Math.min(80, Number(rawSpeedKmh))) : 0;
   const gutter = Boolean(rawGutter);
-  rollForPlayer(room, match, player.id, actualKnockedPins, room.level !== 1 && !player.isBot);
+  if (bowlOffDelivery) recordBowlOffRoll(match, player.id, actualKnockedPins.length);
+  else rollForPlayer(room, match, player.id, actualKnockedPins, room.level !== 1 && !player.isBot);
   sendToMatchViewers(room, match, player.id, {
     type: 'spectator_shot_result',
     result: { matchId: match.id, playerId: player.id, knockedPins: actualKnockedPins, speedKmh, gutter }
@@ -645,8 +664,11 @@ function devFinishRound(socket: WebSocket): void {
     let guard = 0;
     while (!match.complete && guard++ < 80) {
       if (!match.currentPlayerId) break;
-      rollForPlayer(context.room, match, match.currentPlayerId, undefined, false);
-      resolveMatchIfComplete(match);
+      if (match.bowlOffActive) recordBowlOffRoll(match, match.currentPlayerId, testPinResult(10));
+      else {
+        rollForPlayer(context.room, match, match.currentPlayerId, undefined, false);
+        resolveMatchIfComplete(match);
+      }
     }
   }
   broadcastBowling(context.room, 'bowling_state');
@@ -729,6 +751,17 @@ function sanitizeKnockedPins(game: BowlerGame, submitted: number[]): number[] {
   return [...unique].sort((a, b) => a - b);
 }
 
+function sanitizeFullRackPins(submitted: number[]): number[] {
+  const unique = new Set<number>();
+  for (const value of submitted) {
+    if (!Number.isInteger(value)) continue;
+    const pinId = Number(value);
+    if (pinId < 0 || pinId > 9) continue;
+    unique.add(pinId);
+  }
+  return [...unique].sort((a, b) => a - b);
+}
+
 function randomKnockedPins(game: BowlerGame, count: number): number[] {
   const pool = [...game.standingPins];
   shuffle(pool);
@@ -783,23 +816,76 @@ function advanceGameIfNeeded(game: BowlerGame): void {
 }
 
 function resolveMatchIfComplete(match: LaneMatch): void {
-  if (match.complete || !match.playerBId) return;
+  if (match.complete || match.bowlOffActive || !match.playerBId) return;
   const a = match.games.get(match.playerAId)!;
   const b = match.games.get(match.playerBId)!;
   if (!a.complete || !b.complete || a.pendingMathFrames.length || b.pendingMathFrames.length) return;
 
   const aScore = adjustedGameScore(a);
   const bScore = adjustedGameScore(b);
+  if (aScore === bScore) {
+    startBowlOff(match);
+    return;
+  }
+
   match.complete = true;
   match.currentPlayerId = null;
-  if (aScore === bScore) {
-    // Temporary flow-prototype tie-break. A proper bowling roll-off will replace this with the physics stage.
-    match.tieBreak = true;
-    match.winnerId = Math.random() < 0.5 ? match.playerAId : match.playerBId;
-  } else {
-    match.winnerId = aScore > bScore ? match.playerAId : match.playerBId;
-  }
+  match.winnerId = aScore > bScore ? match.playerAId : match.playerBId;
   match.loserId = match.winnerId === match.playerAId ? match.playerBId : match.playerAId;
+}
+
+function startBowlOff(match: LaneMatch): void {
+  if (!match.playerBId) return;
+  match.tieBreak = true;
+  match.bowlOffActive = true;
+  match.bowlOffRound = 1;
+  match.bowlOffPlayerAScore = null;
+  match.bowlOffPlayerBScore = null;
+  match.bowlOffHistory = [];
+  match.complete = false;
+  match.winnerId = null;
+  match.loserId = null;
+  match.currentPlayerId = match.playerAId;
+  match.turnEndsAt = null;
+  match.shotInMotion = false;
+  match.activeShotId = null;
+}
+
+function recordBowlOffRoll(match: LaneMatch, playerId: string, pinCount: number): void {
+  if (!match.bowlOffActive || !match.playerBId || match.complete || match.currentPlayerId !== playerId) return;
+  const score = Math.max(0, Math.min(10, Math.trunc(pinCount)));
+  if (playerId === match.playerAId) match.bowlOffPlayerAScore = score;
+  else if (playerId === match.playerBId) match.bowlOffPlayerBScore = score;
+  else return;
+
+  const aScore = match.bowlOffPlayerAScore;
+  const bScore = match.bowlOffPlayerBScore;
+  if (aScore === null || bScore === null) {
+    match.currentPlayerId = playerId === match.playerAId ? match.playerBId : match.playerAId;
+    return;
+  }
+
+  match.bowlOffHistory.push({ round: match.bowlOffRound, playerAScore: aScore, playerBScore: bScore });
+  if (aScore !== bScore) {
+    match.bowlOffActive = false;
+    match.complete = true;
+    match.currentPlayerId = null;
+    match.turnEndsAt = null;
+    match.winnerId = aScore > bScore ? match.playerAId : match.playerBId;
+    match.loserId = match.winnerId === match.playerAId ? match.playerBId : match.playerAId;
+    return;
+  }
+
+  // Still tied: every new Bowl-Off attempt uses a completely fresh 10-pin rack.
+  // Alternate who bowls first each Bowl-Off round so neither side always has the
+  // advantage of knowing the target score.
+  match.bowlOffRound += 1;
+  match.bowlOffPlayerAScore = null;
+  match.bowlOffPlayerBScore = null;
+  match.currentPlayerId = match.bowlOffRound % 2 === 1 ? match.playerAId : match.playerBId;
+  match.turnEndsAt = null;
+  match.shotInMotion = false;
+  match.activeShotId = null;
 }
 
 function scheduleFinishRound(room: Room): void {
@@ -1024,7 +1110,7 @@ function availableHumanForLateJoin(room: Room, pending: Player): Player | undefi
 
 function hostBotMatch(room: Room): { match: LaneMatch; host: Player; bot: Player } | null {
   for (const match of room.matches) {
-    if (match.complete || !match.playerBId || match.disconnectedPlayerId || match.shotInMotion || matchHasPendingMath(match)) continue;
+    if (match.complete || match.bowlOffActive || !match.playerBId || match.disconnectedPlayerId || match.shotInMotion || matchHasPendingMath(match)) continue;
     const a = findPlayer(room, match.playerAId);
     const b = findPlayer(room, match.playerBId);
     if (!a || !b) continue;
@@ -1158,6 +1244,11 @@ function makeLaneMatch(lane: number, laneCount: number, a: Player, b: Player | n
     winnerId: b ? null : a.id,
     loserId: null,
     tieBreak: false,
+    bowlOffActive: false,
+    bowlOffRound: 0,
+    bowlOffPlayerAScore: null,
+    bowlOffPlayerBScore: null,
+    bowlOffHistory: [],
     turnEndsAt: null,
     shotInMotion: false,
     activeShotId: null,
@@ -1381,6 +1472,11 @@ function publicMatches(room: Room) {
     winnerId: match.winnerId,
     loserId: match.loserId,
     tieBreak: match.tieBreak,
+    bowlOffActive: match.bowlOffActive,
+    bowlOffRound: match.bowlOffRound,
+    bowlOffPlayerAScore: match.bowlOffPlayerAScore,
+    bowlOffPlayerBScore: match.bowlOffPlayerBScore,
+    bowlOffHistory: match.bowlOffHistory.map((round) => ({ ...round })),
     turnEndsAt: match.turnEndsAt,
     disconnectedPlayerId: match.disconnectedPlayerId,
     reconnectEndsAt: match.reconnectEndsAt,
@@ -1459,8 +1555,12 @@ function queueBotTurn(room: Room): void {
 
     match.shotInMotion = false;
     match.activeShotId = null;
-    rollForPlayer(room, match, bot.id, undefined, false);
-    resolveMatchIfComplete(match);
+    if (match.bowlOffActive) {
+      recordBowlOffRoll(match, bot.id, testPinResult(10));
+    } else {
+      rollForPlayer(room, match, bot.id, undefined, false);
+      resolveMatchIfComplete(match);
+    }
     integrateLateJoinersDuringBowling(room);
     armMatchShotClock(room, match);
     broadcastBowling(room, 'bowling_state');
@@ -1533,10 +1633,13 @@ function handleTurnTimeouts(room: Room): void {
       armMatchShotClock(room, match);
       if (player?.socket) sendError(player.socket, 'SHOT_RESULT_RETRY', 'That bowl did not finish syncing. No score was recorded — please bowl again.');
     } else {
-      rollForPlayer(room, match, timedOutId, [], room.level !== 1 && !player?.isBot);
-      resolveMatchIfComplete(match);
+      if (match.bowlOffActive) recordBowlOffRoll(match, timedOutId, 0);
+      else {
+        rollForPlayer(room, match, timedOutId, [], room.level !== 1 && !player?.isBot);
+        resolveMatchIfComplete(match);
+      }
       armMatchShotClock(room, match);
-      if (player?.socket) sendError(player.socket, 'SHOT_CLOCK', '15-second shot clock expired — 0 pins recorded.');
+      if (player?.socket) sendError(player.socket, 'SHOT_CLOCK', match.tieBreak ? '15-second Bowl-Off shot clock expired — 0 pins recorded.' : '15-second shot clock expired — 0 pins recorded.');
     }
     changed = true;
   }
@@ -1757,6 +1860,8 @@ function forfeitDisconnectedPlayer(roomCode: string, playerId: string, matchId: 
   match.pausedTurnRemainingMs = null;
   match.shotInMotion = false;
   match.activeShotId = null;
+  match.bowlOffActive = false;
+  match.tieBreak = false;
   for (const game of match.games.values()) {
     game.mathEndsAt = null;
     game.pausedMathRemainingMs = null;
