@@ -1,4 +1,4 @@
-# Turkey Bowling v0.6.1 — Production Endpoint Locked
+# Turkey Bowling v0.6.2 — Production Endpoint Locked
 
 Multiplayer ten-pin bowling maths game built with Phaser/Vite on the client and Node.js/WebSockets on the server.
 
@@ -65,4 +65,4 @@ cd C:\Projects\bowling
 npm run build:itch
 ```
 
-The finished file will be created at `releases\turkey-bowling-itch-v0.6.1.zip`, with `index.html` at the ZIP root.
+The finished file will be created at `releases\turkey-bowling-itch-v0.6.2.zip`, with `index.html` at the ZIP root.

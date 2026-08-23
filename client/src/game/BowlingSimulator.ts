@@ -55,12 +55,15 @@ const PIN_LAYOUT: ReadonlyArray<readonly [number, number]> = [
 
 const LANE_HALF_WIDTH = 0.72;
 const BALL_RADIUS = 0.064;
-const PIN_RADIUS = 0.05;
+// A regulation ten-pin is about 4.766 in wide versus an 8.5-8.6 in bowling
+// ball, so its maximum radius is only ~55% of the ball radius. The previous
+// 0.05 value made every pin collision body far too fat and caused chunky,
+// domino-like rack reactions. This footprint is much closer to real geometry.
+const PIN_RADIUS = BALL_RADIUS * 0.555;
 const BALL_PIN_RADIUS = BALL_RADIUS + PIN_RADIUS;
-// The drawn 7/10 pins are slightly wider than their old collision circle. Give
-// only the two back-corner pins a small graze allowance so a visible shave
-// counts as contact without making the entire rack easier to hit.
-const CORNER_PIN_GRAZE_MARGIN = 0.016;
+// Keep a very small visual-graze allowance on the 7/10 pins so an apparent
+// edge shave still registers without effectively widening the whole rack.
+const CORNER_PIN_GRAZE_MARGIN = 0.008;
 const PIN_PIN_RADIUS = PIN_RADIUS * 2;
 const START_POSITION_WORLD_X = 0.54;
 const SHOT_START_Y = 0.025;
@@ -310,7 +313,9 @@ export class BowlingSimulator {
 
     this.draw();
 
-    const movingPins = this.pins.some((pin) => !pin.knocked || Math.hypot(pin.vx, pin.vy) > 0.012);
+    const movingPins = this.pins.some((pin) => pin.knocked && (
+      Math.hypot(pin.vx, pin.vy) > 0.012 || Math.abs(pin.angularVelocity) > 0.18
+    ));
     const ballPastDeck = this.ball.y > 1.08;
     if (ballPastDeck) this.ball.visible = false;
 
@@ -447,7 +452,20 @@ export class BowlingSimulator {
 
       pin.vx += nx * impulse * 1.08 + ball.vx * 0.40;
       pin.vy += ny * impulse * 1.02 + ball.vy * 0.34;
-      pin.angularVelocity += (nx * 6.4 + this.hook * 1.8) * (0.9 + impulse) * (0.9 + this.random() * 0.28);
+
+      // Use the tangential component of the actual impact to create tumble.
+      // The old model mostly derived rotation from nx, so two very different
+      // glancing hits could produce nearly the same-looking pin reaction.
+      // This 2.5D torque approximation makes thin hits spin/flip strongly while
+      // centre hits drive the pin more directly through the rack.
+      const tx = -ny;
+      const ty = nx;
+      const tangentialSpeed = ball.vx * tx + ball.vy * ty;
+      const sideTumble = -nx * approach * 4.8;
+      const tangentTumble = tangentialSpeed * 7.0;
+      pin.angularVelocity += (sideTumble + tangentTumble + this.hook * 0.9)
+        * grazeStrength
+        * (0.90 + this.random() * 0.22);
       pin.knocked = true;
       if (pin.id === 0) this.headPinHit = true;
 
@@ -480,17 +498,32 @@ export class BowlingSimulator {
         const nx = dx / distance;
         const ny = dy / distance;
         const rel = (a.vx - b.vx) * nx + (a.vy - b.vy) * ny;
-        const impulse = Math.max(0.04, rel * 0.82);
         const overlap = PIN_PIN_RADIUS - distance;
         a.x -= nx * overlap * 0.5;
         a.y -= ny * overlap * 0.5;
         b.x += nx * overlap * 0.5;
         b.y += ny * overlap * 0.5;
 
+        // Only apply collision impulse while the pins are actually closing.
+        // The old minimum impulse injected fresh energy into already-separating
+        // overlaps, which could make rack action look springy or explosive.
+        const impactSpeed = Math.max(0, rel);
+        if (impactSpeed <= 0.002) continue;
+        const impulse = impactSpeed * 0.82; // ~0.64 effective restitution for equal masses
+
         a.vx -= nx * impulse;
         a.vy -= ny * impulse;
         b.vx += nx * impulse;
         b.vy += ny * impulse;
+
+        // Transfer tangential motion into opposite pin rotation. This is the
+        // key messenger-pin behaviour missing from a simple circle shove: an
+        // off-centre pin can now glance across a neighbour and keep spinning
+        // rather than every collision looking like a straight domino impact.
+        const tx = -ny;
+        const ty = nx;
+        const relativeTangentialSpeed = (a.vx - b.vx) * tx + (a.vy - b.vy) * ty;
+        const spinTransfer = relativeTangentialSpeed * 4.6;
 
         // A moving fallen pin can take out a standing neighbour just like a
         // messenger pin in real ten-pin bowling. Straight head-ball shots make
@@ -498,8 +531,12 @@ export class BowlingSimulator {
         // that resistance because energy is travelling across the deck.
         if (a.knocked && !this.protectedLeavePins.has(b.id) && impulse > this.pinCarryThreshold(b.id)) b.knocked = true;
         if (b.knocked && !this.protectedLeavePins.has(a.id) && impulse > this.pinCarryThreshold(a.id)) a.knocked = true;
-        if (a.knocked) a.angularVelocity += (ny - nx) * impulse * 12 * (0.85 + this.random() * 0.3);
-        if (b.knocked) b.angularVelocity += (nx - ny) * impulse * 12 * (0.85 + this.random() * 0.3);
+        if (a.knocked) {
+          a.angularVelocity += (-spinTransfer - nx * impulse * 5.2) * (0.88 + this.random() * 0.24);
+        }
+        if (b.knocked) {
+          b.angularVelocity += (spinTransfer + nx * impulse * 5.2) * (0.88 + this.random() * 0.24);
+        }
       }
     }
   }
@@ -730,16 +767,36 @@ export class BowlingSimulator {
       if (!this.initialStanding.has(pin.id) || !pin.knocked) continue;
       pin.x += pin.vx * dt;
       pin.y += pin.vy * dt;
+
+      // Once a real pin has passed its balance point, gravity finishes the fall.
+      // Our previous 2.5D pin could lose angular velocity and freeze at a shallow
+      // lean. Add a small deterministic toppling torque so a committed pin falls
+      // through to an almost-horizontal resting pose.
+      const currentTilt = Math.abs(pin.angle);
+      if (currentTilt < 1.46) {
+        const fallbackDirection = pin.id % 2 === 0 ? 1 : -1;
+        const tumbleDirection = Math.sign(pin.angularVelocity || pin.angle || pin.vx || fallbackDirection);
+        const gravityTumble = 2.2 + 3.0 * Math.sin(Math.min(1.46, currentTilt + 0.10));
+        pin.angularVelocity += tumbleDirection * gravityTumble * dt;
+      }
       pin.angle += pin.angularVelocity * dt;
 
-      // Pin deck friction and mild side-wall reaction.
-      const drag = Math.pow(0.973, dt * 60);
+      // Upright/tipping pins retain motion slightly better; once nearly flat,
+      // the larger deck contact patch adds more translational and rotational
+      // friction, like a real fallen pin sliding on the pin deck.
+      const fallAmount = clamp(Math.abs(pin.angle) / 1.46, 0, 1);
+      const linearDragPerFrame = lerp(0.982, 0.968, fallAmount);
+      const angularDragPerFrame = lerp(0.978, 0.958, fallAmount);
+      const drag = Math.pow(linearDragPerFrame, dt * 60);
       pin.vx *= drag;
       pin.vy *= drag;
-      pin.angularVelocity *= Math.pow(0.965, dt * 60);
+      pin.angularVelocity *= Math.pow(angularDragPerFrame, dt * 60);
+
+      // Kickback/side-wall reaction. Keep it damped: real kickbacks can return a
+      // messenger pin, but should never behave like a pinball bumper.
       if (Math.abs(pin.x) > 0.61) {
         pin.x = Math.sign(pin.x) * 0.61;
-        pin.vx *= -0.28;
+        pin.vx *= -0.24;
       }
     }
   }
@@ -1042,42 +1099,144 @@ export class BowlingSimulator {
   private drawPin(pin: SimPin, w: number, h: number): void {
     const ctx = this.ctx;
     const point = this.project(pin.x, pin.y, w, h);
-    const scale = lerp(1.2, 0.97, clamp(pin.y, 0, 1)) * Math.max(36, w * 0.112);
-    const width = scale * 0.46;
-    const height = scale;
-    const tilt = pin.knocked ? clamp(pin.angle, -1.25, 1.25) : 0;
 
+    // Regulation ten-pin proportions are about 15 in tall by 4.766 in wide
+    // (width/height ~= 0.318). The old drawing was ~0.46 and looked squat/fat.
+    // Keep the back row a little smaller for lane perspective while preserving
+    // that real silhouette ratio on every device.
+    const nearHeight = Math.max(54, w * 0.115);
+    const farHeight = Math.max(46, w * 0.096);
+    const height = lerp(nearHeight, farHeight, clamp(pin.y, 0, 1));
+    const diameter = height * 0.318;
+    const half = diameter * 0.5;
+    const tilt = pin.knocked ? clamp(pin.angle, -1.48, 1.48) : 0;
+    const fallAmount = clamp(Math.abs(tilt) / 1.48, 0, 1);
+
+    // The shadow belongs to the deck, not to the rotating pin. Widen it as the
+    // pin falls so the near-horizontal pose has convincing contact with the lane.
     ctx.save();
-    ctx.translate(point.x, point.y - height * 0.38);
-    ctx.rotate(tilt);
     ctx.fillStyle = 'rgba(0,0,0,.20)';
     ctx.beginPath();
-    ctx.ellipse(2, height * 0.44, width * 0.62, height * 0.13, 0, 0, Math.PI * 2);
+    ctx.ellipse(
+      point.x + 2,
+      point.y + 1,
+      lerp(diameter * 0.31, height * 0.34, fallAmount),
+      lerp(height * 0.025, height * 0.055, fallAmount),
+      0,
+      0,
+      Math.PI * 2
+    );
     ctx.fill();
+    ctx.restore();
 
-    // Stylised but recognisably shaped ten-pin silhouette.
-    ctx.beginPath();
-    ctx.moveTo(-width * 0.17, -height * 0.49);
-    ctx.quadraticCurveTo(-width * 0.32, -height * 0.31, -width * 0.26, -height * 0.15);
-    ctx.quadraticCurveTo(-width * 0.20, -height * 0.03, -width * 0.44, height * 0.27);
-    ctx.quadraticCurveTo(-width * 0.55, height * 0.47, 0, height * 0.50);
-    ctx.quadraticCurveTo(width * 0.55, height * 0.47, width * 0.44, height * 0.27);
-    ctx.quadraticCurveTo(width * 0.20, -height * 0.03, width * 0.26, -height * 0.15);
-    ctx.quadraticCurveTo(width * 0.32, -height * 0.31, width * 0.17, -height * 0.49);
-    ctx.quadraticCurveTo(0, -height * 0.57, -width * 0.17, -height * 0.49);
-    const body = ctx.createLinearGradient(-width * 0.5, 0, width * 0.5, 0);
-    body.addColorStop(0, '#d9d9dc');
-    body.addColorStop(0.42, '#ffffff');
-    body.addColorStop(1, '#c8c8ce');
+    ctx.save();
+    // Rotate around the base contact point. This makes the pin topple from the
+    // deck instead of spinning around its waist as the previous artwork did.
+    ctx.translate(point.x, point.y);
+    ctx.rotate(tilt);
+    ctx.translate(0, -height * 0.50);
+
+    const bodyPath = new Path2D();
+    bodyPath.moveTo(0, -height * 0.555);
+    // Head / crown.
+    bodyPath.bezierCurveTo(
+      half * 0.56, -height * 0.555,
+      half * 0.70, -height * 0.485,
+      half * 0.54, -height * 0.410
+    );
+    // Neck narrows above the stripes.
+    bodyPath.bezierCurveTo(
+      half * 0.38, -height * 0.340,
+      half * 0.34, -height * 0.275,
+      half * 0.43, -height * 0.220
+    );
+    // Shoulder flows into the wide belly.
+    bodyPath.bezierCurveTo(
+      half * 0.61, -height * 0.125,
+      half * 0.98, -height * 0.030,
+      half, height * 0.155
+    );
+    // Lower belly tapers to the base.
+    bodyPath.bezierCurveTo(
+      half * 0.98, height * 0.310,
+      half * 0.63, height * 0.455,
+      half * 0.30, height * 0.492
+    );
+    bodyPath.quadraticCurveTo(0, height * 0.525, -half * 0.30, height * 0.492);
+    bodyPath.bezierCurveTo(
+      -half * 0.63, height * 0.455,
+      -half * 0.98, height * 0.310,
+      -half, height * 0.155
+    );
+    bodyPath.bezierCurveTo(
+      -half * 0.98, -height * 0.030,
+      -half * 0.61, -height * 0.125,
+      -half * 0.43, -height * 0.220
+    );
+    bodyPath.bezierCurveTo(
+      -half * 0.34, -height * 0.275,
+      -half * 0.38, -height * 0.340,
+      -half * 0.54, -height * 0.410
+    );
+    bodyPath.bezierCurveTo(
+      -half * 0.70, -height * 0.485,
+      -half * 0.56, -height * 0.555,
+      0, -height * 0.555
+    );
+    bodyPath.closePath();
+
+    const body = ctx.createLinearGradient(-half, 0, half, 0);
+    body.addColorStop(0, '#cfd2d9');
+    body.addColorStop(0.20, '#eef1f5');
+    body.addColorStop(0.48, '#ffffff');
+    body.addColorStop(0.72, '#f5f6f8');
+    body.addColorStop(1, '#c8cbd1');
     ctx.fillStyle = body;
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(75,65,80,.28)';
-    ctx.lineWidth = 0.8;
-    ctx.stroke();
+    ctx.fill(bodyPath);
 
-    ctx.fillStyle = '#d92f45';
-    ctx.fillRect(-width * 0.27, -height * 0.22, width * 0.54, height * 0.055);
-    ctx.fillRect(-width * 0.28, -height * 0.14, width * 0.56, height * 0.045);
+    // Clip all decoration to the true pin silhouette so the red neck bands wrap
+    // cleanly and never extend beyond the body as the old rectangles could.
+    ctx.save();
+    ctx.clip(bodyPath);
+
+    const stripeGradient = ctx.createLinearGradient(-half, 0, half, 0);
+    stripeGradient.addColorStop(0, '#b91f31');
+    stripeGradient.addColorStop(0.45, '#e33748');
+    stripeGradient.addColorStop(0.75, '#d7283a');
+    stripeGradient.addColorStop(1, '#a91b2c');
+    ctx.fillStyle = stripeGradient;
+    ctx.fillRect(-half, -height * 0.300, diameter, height * 0.040);
+    ctx.fillRect(-half, -height * 0.236, diameter, height * 0.033);
+
+    // Gloss highlight gives the white pin a polished urethane look without
+    // requiring raster art, so it stays sharp on phones, iPads and high-DPI PCs.
+    const gloss = ctx.createLinearGradient(-half * 0.75, 0, half * 0.10, 0);
+    gloss.addColorStop(0, 'rgba(255,255,255,0)');
+    gloss.addColorStop(0.48, 'rgba(255,255,255,.58)');
+    gloss.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = gloss;
+    ctx.beginPath();
+    ctx.ellipse(-half * 0.30, height * 0.04, diameter * 0.11, height * 0.33, -0.05, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Soft lower-body shading makes the belly/base shape much easier to read.
+    const lowerShade = ctx.createLinearGradient(0, height * 0.14, 0, height * 0.50);
+    lowerShade.addColorStop(0, 'rgba(115,120,132,0)');
+    lowerShade.addColorStop(1, 'rgba(95,99,112,.14)');
+    ctx.fillStyle = lowerShade;
+    ctx.fillRect(-half, height * 0.12, diameter, height * 0.40);
+    ctx.restore();
+
+    ctx.strokeStyle = 'rgba(68,65,76,.28)';
+    ctx.lineWidth = Math.max(0.7, w * 0.0008);
+    ctx.stroke(bodyPath);
+
+    // Small base ring helps the standing pin sit convincingly on the deck.
+    ctx.fillStyle = 'rgba(170,173,182,.58)';
+    ctx.beginPath();
+    ctx.ellipse(0, height * 0.493, half * 0.34, height * 0.014, 0, 0, Math.PI * 2);
+    ctx.fill();
+
     ctx.restore();
   }
 
