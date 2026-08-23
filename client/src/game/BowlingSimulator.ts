@@ -68,6 +68,11 @@ const BALL_PIN_RADIUS = BALL_RADIUS + PIN_RADIUS;
 // from visually squeezing through two adjacent standing pins.
 const STANDING_PIN_BALL_CONTACT_RADIUS = 0.048;
 const BALL_STANDING_PIN_RADIUS = BALL_RADIUS + STANDING_PIN_BALL_CONTACT_RADIUS;
+// The head pin needs a stricter contact envelope than the rest of the rack.
+// This is close to the true ball + maximum-pin-belly geometry, with only a
+// tiny tolerance for the 2.5D projection. It prevents a clear miss from being
+// scored as a head-pin hit while still allowing a visible edge clip to count.
+const HEAD_PIN_TRUE_CONTACT_RADIUS = BALL_PIN_RADIUS + 0.004;
 // Keep a very small visual-graze allowance on the 7/10 pins so an apparent
 // edge shave still registers without effectively widening the whole rack.
 const CORNER_PIN_GRAZE_MARGIN = 0.008;
@@ -109,10 +114,10 @@ const PIN_KICK_SPIN_SCALE = 0.78;
 // This lets a horizontal messenger pin sweep through pins behind it, which is
 // a major part of real ten-pin carry. The values are deliberately conservative
 // so one fallen pin can skittle a cluster without behaving like a giant bat.
-const FALLEN_PIN_SWEEP_HALF_LENGTH = 0.112;
-const FALLEN_PIN_SWEEP_RADIUS = 0.043;
-const FALLEN_PIN_SWEEP_MIN_SPEED = 0.035;
-const FALLEN_PIN_SWEEP_MIN_FALL = 0.52;
+const FALLEN_PIN_SWEEP_HALF_LENGTH = 0.124;
+const FALLEN_PIN_SWEEP_RADIUS = 0.047;
+const FALLEN_PIN_SWEEP_MIN_SPEED = 0.027;
+const FALLEN_PIN_SWEEP_MIN_FALL = 0.44;
 
 const START_POSITION_WORLD_X = 0.54;
 const SHOT_START_Y = 0.025;
@@ -462,18 +467,20 @@ export class BowlingSimulator {
   }
 
   private collideBallWithPins(ball: SimBall, previousBallX: number, previousBallY: number): void {
-    const pairedGapPins = this.applyAdjacentGapContact(ball, previousBallX, previousBallY);
+    // Resolve genuine ball-to-pin contacts FIRST. The v0.7.26 gap bridge ran
+    // before this loop, so a ball heading between the head pin and the 2/3 pin
+    // could provisionally protect pin 1 before its real edge clip was tested.
+    // That made visible grazes leave the head pin standing. Direct geometry now
+    // always wins; the impossible-gap bridge is only a fallback afterwards.
+    const directlyContacted = new Set<number>();
+
     for (const pin of this.pins) {
-      if (pairedGapPins.has(pin.id)) continue;
       if (!this.initialStanding.has(pin.id)) continue;
-      const protectedStanding = this.rackCarryApplied && this.protectedLeavePins.has(pin.id) && !pin.knocked;
+      let protectedStanding = this.rackCarryApplied && this.protectedLeavePins.has(pin.id) && !pin.knocked;
       if (pin.knocked && Math.hypot(pin.vx, pin.vy) < 0.005) continue;
 
-      // Use the whole distance travelled during this fixed physics step instead
-      // of testing only the ball's final point. This prevents a fast edge hit
-      // from tunnelling through a pin between two 120 Hz samples. The 7 and 10
-      // pins get a tiny extra allowance because their rendered body extends a
-      // little beyond the old circular collision radius.
+      // Swept closest-point contact prevents a fast ball tunnelling through a
+      // pin between two 120 Hz fixed steps.
       const segmentX = ball.x - previousBallX;
       const segmentY = ball.y - previousBallY;
       const segmentLengthSq = segmentX * segmentX + segmentY * segmentY;
@@ -484,16 +491,58 @@ export class BowlingSimulator {
         : 1;
       const closestX = previousBallX + segmentX * segmentT;
       const closestY = previousBallY + segmentY * segmentT;
-      let dx = pin.x - closestX;
-      let dy = pin.y - closestY;
-      let distance = Math.hypot(dx, dy);
+      const closestDx = pin.x - closestX;
+      const closestDy = pin.y - closestY;
+      const closestDistance = Math.hypot(closestDx, closestDy);
       const cornerPin = pin.id === 6 || pin.id === 9;
-      const baseContactRadius = pin.knocked ? BALL_PIN_RADIUS : BALL_STANDING_PIN_RADIUS;
-      const effectiveRadius = baseContactRadius + (cornerPin ? CORNER_PIN_GRAZE_MARGIN : 0);
-      if (distance >= effectiveRadius) continue;
 
-      // An exact centre-line collision has no useful normal. Fall back to the
-      // current ball position, then finally to a tiny upward-facing normal.
+      // Pin 1 uses the stricter true-contact radius. The rest of the standing
+      // rack keeps the slightly larger gameplay envelope that stops the ball
+      // slipping through visually impossible gaps.
+      const baseContactRadius = pin.knocked
+        ? BALL_PIN_RADIUS
+        : pin.id === 0
+          ? HEAD_PIN_TRUE_CONTACT_RADIUS
+          : BALL_STANDING_PIN_RADIUS;
+      const effectiveRadius = baseContactRadius + (cornerPin ? CORNER_PIN_GRAZE_MARGIN : 0);
+      if (closestDistance >= effectiveRadius) continue;
+
+      // Use the FIRST point where the swept ball enters the contact circle for
+      // the collision normal. Using the closest point (the old method) makes a
+      // thin vertical clip produce an almost horizontal normal and virtually no
+      // approach speed, which is why glancing head-pin hits felt dead.
+      let contactX = closestX;
+      let contactY = closestY;
+      if (segmentLengthSq > 0.0000001) {
+        const fx = previousBallX - pin.x;
+        const fy = previousBallY - pin.y;
+        const qa = segmentLengthSq;
+        const qb = 2 * (fx * segmentX + fy * segmentY);
+        const qc = fx * fx + fy * fy - effectiveRadius * effectiveRadius;
+        const discriminant = qb * qb - 4 * qa * qc;
+        if (discriminant >= 0) {
+          const enterT = (-qb - Math.sqrt(discriminant)) / (2 * qa);
+          if (enterT >= 0 && enterT <= 1) {
+            contactX = previousBallX + segmentX * enterT;
+            contactY = previousBallY + segmentY * enterT;
+          }
+        }
+      }
+      let dx = pin.x - contactX;
+      let dy = pin.y - contactY;
+      let distance = Math.hypot(dx, dy);
+
+      // If pin 1 had been provisionally protected because the ball appeared to
+      // miss it, a REAL later ball contact overrides that protection. A clean
+      // miss never reaches this branch, while an actual visible graze now falls
+      // and carries correctly.
+      if (pin.id === 0 && protectedStanding && !pin.knocked) {
+        this.protectedLeavePins.delete(0);
+        protectedStanding = false;
+      }
+
+      directlyContacted.add(pin.id);
+
       if (distance <= 0.0001) {
         dx = pin.x - ball.x;
         dy = pin.y - ball.y;
@@ -509,39 +558,39 @@ export class BowlingSimulator {
       const ny = dy / distance;
       const relativeVx = ball.vx - pin.vx;
       const relativeVy = ball.vy - pin.vy;
+      const incomingBallVy = ball.vy;
       const approach = Math.max(0.10, relativeVx * nx + relativeVy * ny);
-      // A true edge shave transfers less energy than a centre hit, but it still
-      // visibly topples the pin. This is especially important for 7/10 spares.
-      const grazeDepth = clamp((effectiveRadius - Math.min(distance, effectiveRadius)) / Math.max(0.0001, effectiveRadius), 0, 1);
-      const grazeStrength = cornerPin ? (0.72 + 0.28 * Math.sqrt(grazeDepth)) : 1;
 
-      // Physically-inspired normal impulse using the real ball:pin mass ratio.
-      // A low coefficient of restitution removes the old ping-pong feel while
-      // preserving enough carry for a well-entered pocket shot.
+      // Classify the contact continuously. A centre hit has glanceAmount ~= 0;
+      // a shave around the outside edge tends toward 1. Thin hits transfer less
+      // normal energy, but MORE lateral/tumbling energy, which makes the pin
+      // skittle across the rack instead of simply falling backwards.
+      const radialRatio = clamp(closestDistance / Math.max(0.0001, effectiveRadius), 0, 1);
+      const glanceAmount = clamp((radialRatio - 0.42) / 0.56, 0, 1);
+      const baseGrazeStrength = lerp(1.0, 0.76, glanceAmount);
+      const cornerAllowance = cornerPin ? 0.92 + 0.08 * Math.sqrt(1 - radialRatio) : 1;
+      const grazeStrength = baseGrazeStrength * cornerAllowance;
+
       const normalImpulse = ((1 + BALL_PIN_RESTITUTION) * approach * grazeStrength)
         / (1 / BALL_MASS_KG + 1 / PIN_MASS_KG);
       const pinNormalDelta = normalImpulse / PIN_MASS_KG;
       const ballNormalDelta = normalImpulse / BALL_MASS_KG;
 
-      // Separate before applying impulse so the same pin is not hit repeatedly
-      // in one substep. For swept-only contacts the overlap can be tiny, which
-      // is fine—the important part is registering the visible graze.
-      const overlap = Math.max(0, effectiveRadius - distance);
+      const overlap = Math.max(0, effectiveRadius - closestDistance);
       const tx = -ny;
       const ty = nx;
       const tangentialSpeed = relativeVx * tx + relativeVy * ty;
-      const tangentialTransfer = tangentialSpeed * 0.10 * grazeStrength;
+      const tangentialTransfer = tangentialSpeed * lerp(0.10, 0.18, glanceAmount) * grazeStrength;
       const ballTangentialReaction = tangentialTransfer * (PIN_MASS_KG / BALL_MASS_KG);
 
       if (protectedStanding) {
-        // A deliberately protected leave must remain a SOLID object. Earlier
-        // versions skipped it completely, creating a ghost pin that the ball
-        // could pass through. Keep the pin upright, but separate and deflect the
-        // ball as if it met a stable standing body.
+        // Scoring-protected leaves are still physically solid. Pin 1 is handled
+        // above, so only genuine leave pins reach this branch.
         ball.x -= nx * overlap * 0.96;
         ball.y -= ny * overlap * 0.96;
         ball.vx -= nx * ballNormalDelta * 0.92 + tx * ballTangentialReaction * 0.55;
-        ball.vy = Math.max(0.18, ball.vy - ny * ballNormalDelta * 0.92 - ty * ballTangentialReaction * 0.55);
+        ball.vy = Math.max(incomingBallVy * 0.70, 0.22,
+          ball.vy - ny * ballNormalDelta * 0.92 - ty * ballTangentialReaction * 0.55);
         continue;
       }
 
@@ -555,36 +604,53 @@ export class BowlingSimulator {
       ball.vx -= nx * ballNormalDelta;
       ball.vy = Math.max(0.24, ball.vy - ny * ballNormalDelta);
 
-      // A small tangential transfer gives glancing hits realistic side movement
-      // and torque without flinging pins sideways as if they were weightless.
       pin.vx += tx * tangentialTransfer;
       pin.vy += ty * tangentialTransfer;
       ball.vx -= tx * ballTangentialReaction;
       ball.vy = Math.max(0.24, ball.vy - ty * ballTangentialReaction);
 
-      // Reduced angular gain is intentional: thin hits still rotate strongly,
-      // but each pin now reads as a heavier wooden/composite object.
-      const sideTumble = -nx * approach * 3.6;
-      const tangentTumble = tangentialSpeed * 4.8;
+      // Glancing shots are where real racks become lively. Add deterministic
+      // lateral skittle energy to the clipped pin, rather than extra backwards
+      // speed, so it becomes a messenger across/behind the pocket.
+      if (glanceAmount > 0.18) {
+        const skittleBoost = (0.020 + 0.070 * glanceAmount) * (0.82 + this.shotPower * 0.30);
+        pin.vx += nx * skittleBoost + tx * Math.sign(tangentialSpeed || nx || 1) * skittleBoost * 0.30;
+        pin.vy += Math.max(0, incomingBallVy) * 0.045 * glanceAmount;
+      }
+
+      const sideTumble = -nx * approach * lerp(3.6, 6.7, glanceAmount);
+      const tangentTumble = tangentialSpeed * lerp(4.8, 7.8, glanceAmount);
       pin.angularVelocity += (sideTumble + tangentTumble + this.hook * 0.65)
-        * grazeStrength
         * (0.92 + this.random() * 0.16);
+      if (glanceAmount > 0.25) {
+        pin.angularVelocity += -nx * (0.9 + 2.5 * glanceAmount) * (0.90 + this.random() * 0.20);
+      }
+
       pin.knocked = true;
       if (pin.id === 0) this.headPinHit = true;
 
-      // On the first contact with a full rack, shape the carry around the
-      // bowler's entry angle. A straight head-ball drives through the middle
-      // but tends to leave the 7/10 corners; a quality hooked pocket entry
-      // drives pins sideways through the rack and can carry all ten.
       if (!this.rackCarryApplied && this.initialStanding.size === 10) {
         this.applyRackEntryDynamics(ball, pin.id);
       }
 
-      // Ball velocity has already been updated by the mass-based impulse above.
+      // A heavy bowling ball should continue through the pocket. Preserve more
+      // forward speed on a thin clip than on a square hit so it cannot appear to
+      // stick behind pin 1 while scripted/messenger pins fall farther back.
+      const minimumForwardRetention = incomingBallVy * lerp(0.72, 0.88, glanceAmount);
+      ball.vy = Math.max(0.26, ball.vy, minimumForwardRetention);
     }
+
+    // Only after all genuine contacts have been tested do we bridge a visually
+    // impossible gap between two untouched adjacent standing pins.
+    this.applyAdjacentGapContact(ball, previousBallX, previousBallY, directlyContacted);
   }
 
-  private applyAdjacentGapContact(ball: SimBall, previousBallX: number, previousBallY: number): Set<number> {
+  private applyAdjacentGapContact(
+    ball: SimBall,
+    previousBallX: number,
+    previousBallY: number,
+    directlyContacted: ReadonlySet<number> = new Set<number>()
+  ): Set<number> {
     const contacted = new Set<number>();
     if (ball.gutter || ball.vy <= 0) return contacted;
 
@@ -594,41 +660,43 @@ export class BowlingSimulator {
       if (!leftPin || !rightPin) continue;
       if (!this.initialStanding.has(leftId) || !this.initialStanding.has(rightId)) continue;
       if (leftPin.knocked || rightPin.knocked) continue;
+      // If the ball really clipped either member of this pair during this step,
+      // never replace that physical contact with the artificial gap bridge.
+      if (directlyContacted.has(leftId) || directlyContacted.has(rightId)) continue;
 
       const zoneStart = rowY - ADJACENT_GAP_Y_TOLERANCE;
       if (ball.y < zoneStart || previousBallY > rowY + 0.025) continue;
-
-      // Reaching an adjacent-pair corridor on a full rack means the ball has
-      // already passed the head pin without touching it. Keep pin 1 standing
-      // for the rest of this shot so a later scripted messenger cannot make it
-      // fall backwards after the ball clearly missed it.
-      if (this.initialStanding.size === 10 && !this.headPinHit && this.initialStanding.has(0)) {
-        this.protectedLeavePins.add(0);
-      }
 
       const timeToRow = (rowY - ball.y) / Math.max(0.15, ball.vy);
       const projectedX = ball.x + ball.vx * timeToRow;
       if (Math.abs(projectedX - midpoint) > ADJACENT_GAP_HALF_WIDTH) continue;
 
-      // The ball is physically wider than the visible inside-face gap. Resolve
-      // one paired impact: both pins receive outward/forward momentum while the
-      // ball gives up energy and continues through the deck. Protected scoring
-      // leaves remain upright, but still behave as solid bodies and deflect the ball.
-      const forward = Math.max(0.17, ball.vy * 0.27);
-      const sharedLateral = ball.vx * 0.12;
-      const spread = 0.115 + Math.min(0.035, Math.abs(ball.vx) * 0.04);
+      // By the time the ball has genuinely reached the 2/3-pin corridor without
+      // a direct pin-1 contact, the head pin was clearly missed. Protect it from
+      // later scripted carry/messengers; a true graze would already have been
+      // detected by the direct-contact loop above.
+      if (this.initialStanding.size === 10 && !this.headPinHit && this.initialStanding.has(0)) {
+        this.protectedLeavePins.add(0);
+      }
+
+      const incomingBallVy = ball.vy;
+      const forward = Math.max(0.18, ball.vy * 0.29);
+      const sharedLateral = ball.vx * 0.14;
+      const spread = 0.122 + Math.min(0.040, Math.abs(ball.vx) * 0.05);
 
       const leftProtected = this.rackCarryApplied && this.protectedLeavePins.has(leftId);
       const rightProtected = this.rackCarryApplied && this.protectedLeavePins.has(rightId);
-      if (!leftProtected) this.kickPin(leftId, sharedLateral - spread, forward, -4.2);
-      if (!rightProtected) this.kickPin(rightId, sharedLateral + spread, forward, 4.2);
+      if (!leftProtected) this.kickPin(leftId, sharedLateral - spread, forward, -4.7);
+      if (!rightProtected) this.kickPin(rightId, sharedLateral + spread, forward, 4.7);
 
-      // Even a protected leave is not a ghost. A paired hit always costs the ball
-      // momentum; if one side stays upright, add a small deflection away from it.
-      ball.vy = Math.max(0.22, ball.vy * 0.86);
-      ball.vx *= 0.82;
+      // The ball cannot fit through the gap, but it should not stop dead either.
+      // It gives up a believable chunk of speed and is deflected through the rack.
+      ball.vy = Math.max(0.30, incomingBallVy * 0.82);
+      ball.vx *= 0.80;
       if (leftProtected !== rightProtected) {
-        ball.vx += leftProtected ? 0.055 : -0.055;
+        ball.vx += leftProtected ? 0.060 : -0.060;
+      } else {
+        ball.vx += (projectedX - midpoint) * 0.18;
       }
 
       contacted.add(leftId);
@@ -745,20 +813,20 @@ export class BowlingSimulator {
 
         let nx = distance > 0.0001 ? dx / distance : -axisY;
         let ny = distance > 0.0001 ? dy / distance : axisX;
-        const sweepEnergy = clamp(speed * (0.78 + 0.34 * fallAmount) + Math.abs(mover.angularVelocity) * 0.014, 0.05, 0.42);
+        const sweepEnergy = clamp(speed * (0.84 + 0.38 * fallAmount) + Math.abs(mover.angularVelocity) * 0.016, 0.05, 0.48);
         const randomness = 0.82 + this.random() * 0.38;
 
         target.knocked = true;
-        target.vx += (mover.vx * 0.46 + nx * sweepEnergy * 0.72) * randomness;
-        target.vy += (mover.vy * 0.48 + ny * sweepEnergy * 0.34) * (0.86 + this.random() * 0.30);
-        target.angularVelocity += (spinSide * 3.2 + nx * 2.6) * (0.82 + this.random() * 0.40);
+        target.vx += (mover.vx * 0.54 + nx * sweepEnergy * 0.84) * randomness;
+        target.vy += (mover.vy * 0.54 + ny * sweepEnergy * 0.38) * (0.86 + this.random() * 0.30);
+        target.angularVelocity += (spinSide * 3.8 + nx * 3.0) * (0.82 + this.random() * 0.40);
 
         // The messenger gives up some momentum, but keeps enough to continue
         // through a small cluster just like a pin sliding horizontally through
         // the back row in real bowling.
-        mover.vx *= 0.82;
-        mover.vy *= 0.84;
-        mover.angularVelocity *= 0.90;
+        mover.vx *= 0.85;
+        mover.vy *= 0.86;
+        mover.angularVelocity *= 0.91;
       }
     }
   }
@@ -1037,7 +1105,7 @@ export class BowlingSimulator {
   private pinCarryThreshold(pinId: number): number {
     if (this.protectedLeavePins.has(pinId)) return 0.30;
     const isCorner = pinId === 6 || pinId === 9; // 7-pin / 10-pin
-    if (!isCorner) return 0.042;
+    if (!isCorner) return 0.036;
     if (this.straightHeadBall) return 0.16;
     return lerp(0.105, 0.035, this.pocketQuality);
   }

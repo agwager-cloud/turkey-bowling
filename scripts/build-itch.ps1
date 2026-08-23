@@ -41,7 +41,7 @@ if ($refs.Count -eq 0) {
 
 $releaseDir = Join-Path $root "releases"
 New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
-$zip = Join-Path $releaseDir "turkey-bowling-itch-v0.7.26.zip"
+$zip = Join-Path $releaseDir "turkey-bowling-itch-v0.7.27.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
 
 # Put the *contents* of dist at ZIP root, never the dist folder itself.

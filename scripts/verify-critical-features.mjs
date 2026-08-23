@@ -12,6 +12,10 @@ const checks = [
   ['spare SFX trigger', 'client/src/scenes/BowlingScene.ts', /playSpare\(\)/],
   ['zero-pin SFX trigger', 'client/src/scenes/BowlingScene.ts', /playZeroPins\(\)/],
   ['solid adjacent-pin gap bridge', 'client/src/game/BowlingSimulator.ts', /applyAdjacentGapContact/],
+  ['true head-pin contact radius', 'client/src/game/BowlingSimulator.ts', /HEAD_PIN_TRUE_CONTACT_RADIUS/],
+  ['direct contact before gap fallback', 'client/src/game/BowlingSimulator.ts', /directlyContacted.*applyAdjacentGapContact/s],
+  ['swept first-contact normal', 'client/src/game/BowlingSimulator.ts', /enterT.*Math\.sqrt\(discriminant\)/s],
+  ['ball forward retention through rack', 'client/src/game/BowlingSimulator.ts', /minimumForwardRetention/],
   ['head-pin miss protection', 'client/src/game/BowlingSimulator.ts', /struckPinId !== 0.*protectedLeavePins\.add\(0\)/s],
   ['rare bad-bowl 7-10 gate', 'client/src/game/BowlingSimulator.ts', /genuinelyBadStraight.*sevenTenChance/s],
   ['fallen-pin messenger sweep', 'client/src/game/BowlingSimulator.ts', /collideFallenPinSweeps/],
@@ -34,4 +38,4 @@ if (failed) {
   console.error('\nCritical Turkey Bowling regression detected. Build stopped.');
   process.exit(1);
 }
-console.log('\nCritical v0.7.26 stability and physics features verified.');
+console.log('\nCritical v0.7.27 stability and physics features verified.');
