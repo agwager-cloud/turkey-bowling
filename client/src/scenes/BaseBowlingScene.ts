@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { ensureRoomCodeBadge, ensureSoundToggle } from '../ui/dom';
 import { appState } from '../state';
 import { audioDirector } from '../audio/AudioDirector';
+import { network } from '../net/NetworkManager';
 
 export class BaseBowlingScene extends Phaser.Scene {
   protected backgroundGraphics?: Phaser.GameObjects.Graphics;
@@ -14,7 +15,13 @@ export class BaseBowlingScene extends Phaser.Scene {
     this.drawBowlingBackground();
     this.resizeHandler = () => this.drawBowlingBackground();
     this.scale.on('resize', this.resizeHandler);
+    const removeKickedListener = network.on('kicked', (message) => {
+      appState.resetRoom();
+      alert(message);
+      this.scene.start('StartScene');
+    });
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      removeKickedListener();
       if (this.resizeHandler) this.scale.off('resize', this.resizeHandler);
     });
   }

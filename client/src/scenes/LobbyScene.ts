@@ -25,11 +25,6 @@ export class LobbyScene extends BaseBowlingScene {
         appState.roundResult = null;
         this.scene.start('MatchupScene');
       }),
-      network.on('kicked', (message) => {
-        appState.resetRoom();
-        alert(message);
-        this.scene.start('StartScene');
-      }),
       network.on('error', ({ message }) => alert(message))
     );
     this.events.once('shutdown', () => this.cleanup.splice(0).forEach((fn) => fn()));

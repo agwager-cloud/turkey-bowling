@@ -55,6 +55,16 @@ class AudioDirector {
     void this.playOneShot(asset('cheer.mp3'), 0.88, false);
   }
 
+  /** Spare celebration callout. Matches the strike cheer volume. */
+  playSpare(): void {
+    void this.playOneShot(asset('nice_spare.mp3'), 0.88, false);
+  }
+
+  /** Zero-pin reaction. Matches the cheer/spare callout volume. */
+  playZeroPins(): void {
+    void this.playOneShot(asset('awww.mp3'), 0.88, false);
+  }
+
   private makeLoop(src: string, volume: number): LoopTrack {
     const audio = new Audio(src);
     audio.loop = true;

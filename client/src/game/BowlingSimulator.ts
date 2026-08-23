@@ -65,12 +65,30 @@ const BALL_PIN_RADIUS = BALL_RADIUS + PIN_RADIUS;
 // edge shave still registers without effectively widening the whole rack.
 const CORNER_PIN_GRAZE_MARGIN = 0.008;
 const PIN_PIN_RADIUS = PIN_RADIUS * 2;
+
+// Real-world mass ratio: a typical 15 lb bowling ball is ~6.8 kg and a
+// regulation pin is ~1.59 kg. The simulator previously used hand-tuned velocity
+// additions that made the rack feel unusually light. Explicit masses plus low
+// restitution make impacts look denser: the ball drives through the pocket but
+// visibly gives up speed, while pins move with less explosive acceleration.
+const BALL_MASS_KG = 6.80;
+const PIN_MASS_KG = 1.59;
+const BALL_PIN_RESTITUTION = 0.22;
+const PIN_PIN_RESTITUTION = 0.28;
+const PIN_KICK_TRANSLATION_SCALE = 0.82;
+const PIN_KICK_SPIN_SCALE = 0.72;
+
 const START_POSITION_WORLD_X = 0.54;
 const SHOT_START_Y = 0.025;
 const SHOT_TARGET_Y = 0.822;
 const MAX_HOOK_OFFSET = 0.60;
 const LANE_TOP_HALF_RATIO = 0.158;
 const LANE_BOTTOM_HALF_RATIO = 0.335;
+// Give the far end of the lane more vertical breathing room. This effectively
+// tilts the camera upward and lowers the rack on screen so the taller pin heads
+// remain fully visible instead of clipping against the top of the canvas.
+const LANE_TOP_Y_RATIO = 0.145;
+const LANE_BOTTOM_Y_RATIO = 0.98;
 
 export class BowlingSimulator {
   private readonly canvas: HTMLCanvasElement;
@@ -434,12 +452,21 @@ export class BowlingSimulator {
 
       const nx = dx / distance;
       const ny = dy / distance;
-      const approach = Math.max(0.15, ball.vx * nx + ball.vy * ny);
+      const relativeVx = ball.vx - pin.vx;
+      const relativeVy = ball.vy - pin.vy;
+      const approach = Math.max(0.10, relativeVx * nx + relativeVy * ny);
       // A true edge shave transfers less energy than a centre hit, but it still
       // visibly topples the pin. This is especially important for 7/10 spares.
       const grazeDepth = clamp((effectiveRadius - Math.min(distance, effectiveRadius)) / Math.max(0.0001, effectiveRadius), 0, 1);
       const grazeStrength = cornerPin ? (0.72 + 0.28 * Math.sqrt(grazeDepth)) : 1;
-      const impulse = approach * 1.06 * grazeStrength;
+
+      // Physically-inspired normal impulse using the real ball:pin mass ratio.
+      // A low coefficient of restitution removes the old ping-pong feel while
+      // preserving enough carry for a well-entered pocket shot.
+      const normalImpulse = ((1 + BALL_PIN_RESTITUTION) * approach * grazeStrength)
+        / (1 / BALL_MASS_KG + 1 / PIN_MASS_KG);
+      const pinNormalDelta = normalImpulse / PIN_MASS_KG;
+      const ballNormalDelta = normalImpulse / BALL_MASS_KG;
 
       // Separate before applying impulse so the same pin is not hit repeatedly
       // in one substep. For swept-only contacts the overlap can be tiny, which
@@ -450,22 +477,30 @@ export class BowlingSimulator {
       ball.x -= nx * overlap * 0.3;
       ball.y -= ny * overlap * 0.3;
 
-      pin.vx += nx * impulse * 1.08 + ball.vx * 0.40;
-      pin.vy += ny * impulse * 1.02 + ball.vy * 0.34;
+      pin.vx += nx * pinNormalDelta;
+      pin.vy += ny * pinNormalDelta;
+      ball.vx -= nx * ballNormalDelta;
+      ball.vy = Math.max(0.24, ball.vy - ny * ballNormalDelta);
 
-      // Use the tangential component of the actual impact to create tumble.
-      // The old model mostly derived rotation from nx, so two very different
-      // glancing hits could produce nearly the same-looking pin reaction.
-      // This 2.5D torque approximation makes thin hits spin/flip strongly while
-      // centre hits drive the pin more directly through the rack.
+      // A small tangential transfer gives glancing hits realistic side movement
+      // and torque without flinging pins sideways as if they were weightless.
       const tx = -ny;
       const ty = nx;
-      const tangentialSpeed = ball.vx * tx + ball.vy * ty;
-      const sideTumble = -nx * approach * 4.8;
-      const tangentTumble = tangentialSpeed * 7.0;
-      pin.angularVelocity += (sideTumble + tangentTumble + this.hook * 0.9)
+      const tangentialSpeed = relativeVx * tx + relativeVy * ty;
+      const tangentialTransfer = tangentialSpeed * 0.10 * grazeStrength;
+      pin.vx += tx * tangentialTransfer;
+      pin.vy += ty * tangentialTransfer;
+      const ballTangentialReaction = tangentialTransfer * (PIN_MASS_KG / BALL_MASS_KG);
+      ball.vx -= tx * ballTangentialReaction;
+      ball.vy = Math.max(0.24, ball.vy - ty * ballTangentialReaction);
+
+      // Reduced angular gain is intentional: thin hits still rotate strongly,
+      // but each pin now reads as a heavier wooden/composite object.
+      const sideTumble = -nx * approach * 3.6;
+      const tangentTumble = tangentialSpeed * 4.8;
+      pin.angularVelocity += (sideTumble + tangentTumble + this.hook * 0.65)
         * grazeStrength
-        * (0.90 + this.random() * 0.22);
+        * (0.92 + this.random() * 0.16);
       pin.knocked = true;
       if (pin.id === 0) this.headPinHit = true;
 
@@ -477,9 +512,7 @@ export class BowlingSimulator {
         this.applyRackEntryDynamics(ball, pin.id);
       }
 
-      // The 15 lb-ish ball retains most of its energy but deflects off contact.
-      ball.vx -= nx * impulse * 0.11;
-      ball.vy = Math.max(0.28, ball.vy - ny * impulse * 0.035);
+      // Ball velocity has already been updated by the mass-based impulse above.
     }
   }
 
@@ -509,21 +542,23 @@ export class BowlingSimulator {
         // overlaps, which could make rack action look springy or explosive.
         const impactSpeed = Math.max(0, rel);
         if (impactSpeed <= 0.002) continue;
-        const impulse = impactSpeed * 0.82; // ~0.64 effective restitution for equal masses
+        // Equal-mass pin collision with deliberately modest restitution. Real
+        // pins thud and tumble; they do not rebound like billiard balls.
+        const impulseJ = ((1 + PIN_PIN_RESTITUTION) * impactSpeed)
+          / (1 / PIN_MASS_KG + 1 / PIN_MASS_KG);
+        const impulse = impulseJ / PIN_MASS_KG;
 
         a.vx -= nx * impulse;
         a.vy -= ny * impulse;
         b.vx += nx * impulse;
         b.vy += ny * impulse;
 
-        // Transfer tangential motion into opposite pin rotation. This is the
-        // key messenger-pin behaviour missing from a simple circle shove: an
-        // off-centre pin can now glance across a neighbour and keep spinning
-        // rather than every collision looking like a straight domino impact.
+        // Keep tangential rotation restrained so messenger pins sweep across the
+        // deck rather than cartwheeling unrealistically after every side hit.
         const tx = -ny;
         const ty = nx;
         const relativeTangentialSpeed = (a.vx - b.vx) * tx + (a.vy - b.vy) * ty;
-        const spinTransfer = relativeTangentialSpeed * 4.6;
+        const spinTransfer = relativeTangentialSpeed * 3.4;
 
         // A moving fallen pin can take out a standing neighbour just like a
         // messenger pin in real ten-pin bowling. Straight head-ball shots make
@@ -532,10 +567,10 @@ export class BowlingSimulator {
         if (a.knocked && !this.protectedLeavePins.has(b.id) && impulse > this.pinCarryThreshold(b.id)) b.knocked = true;
         if (b.knocked && !this.protectedLeavePins.has(a.id) && impulse > this.pinCarryThreshold(a.id)) a.knocked = true;
         if (a.knocked) {
-          a.angularVelocity += (-spinTransfer - nx * impulse * 5.2) * (0.88 + this.random() * 0.24);
+          a.angularVelocity += (-spinTransfer - nx * impulse * 4.0) * (0.88 + this.random() * 0.24);
         }
         if (b.knocked) {
-          b.angularVelocity += (spinTransfer + nx * impulse * 5.2) * (0.88 + this.random() * 0.24);
+          b.angularVelocity += (spinTransfer + nx * impulse * 4.0) * (0.88 + this.random() * 0.24);
         }
       }
     }
@@ -748,10 +783,10 @@ export class BowlingSimulator {
     if (!pin || !this.initialStanding.has(id)) return;
     if (this.protectedLeavePins.has(id)) return;
     pin.knocked = true;
-    const energyJitter = 0.88 + this.random() * 0.28;
-    pin.vx += vx * energyJitter;
-    pin.vy += vy * (0.90 + this.random() * 0.25);
-    pin.angularVelocity += spin * (0.82 + this.random() * 0.42);
+    const energyJitter = 0.92 + this.random() * 0.18;
+    pin.vx += vx * PIN_KICK_TRANSLATION_SCALE * energyJitter;
+    pin.vy += vy * PIN_KICK_TRANSLATION_SCALE * (0.93 + this.random() * 0.16);
+    pin.angularVelocity += spin * PIN_KICK_SPIN_SCALE * (0.88 + this.random() * 0.24);
   }
 
   private pinCarryThreshold(pinId: number): number {
@@ -776,17 +811,18 @@ export class BowlingSimulator {
       if (currentTilt < 1.46) {
         const fallbackDirection = pin.id % 2 === 0 ? 1 : -1;
         const tumbleDirection = Math.sign(pin.angularVelocity || pin.angle || pin.vx || fallbackDirection);
-        const gravityTumble = 2.2 + 3.0 * Math.sin(Math.min(1.46, currentTilt + 0.10));
+        const gravityTumble = 1.7 + 2.35 * Math.sin(Math.min(1.46, currentTilt + 0.10));
         pin.angularVelocity += tumbleDirection * gravityTumble * dt;
       }
+      pin.angularVelocity = clamp(pin.angularVelocity, -5.4, 5.4);
       pin.angle += pin.angularVelocity * dt;
 
       // Upright/tipping pins retain motion slightly better; once nearly flat,
       // the larger deck contact patch adds more translational and rotational
       // friction, like a real fallen pin sliding on the pin deck.
       const fallAmount = clamp(Math.abs(pin.angle) / 1.46, 0, 1);
-      const linearDragPerFrame = lerp(0.982, 0.968, fallAmount);
-      const angularDragPerFrame = lerp(0.978, 0.958, fallAmount);
+      const linearDragPerFrame = lerp(0.978, 0.962, fallAmount);
+      const angularDragPerFrame = lerp(0.971, 0.950, fallAmount);
       const drag = Math.pow(linearDragPerFrame, dt * 60);
       pin.vx *= drag;
       pin.vy *= drag;
@@ -868,8 +904,8 @@ export class BowlingSimulator {
 
   private drawEnvironment(w: number, h: number): void {
     const ctx = this.ctx;
-    const topY = h * 0.08;
-    const bottomY = h * 0.98;
+    const topY = h * LANE_TOP_Y_RATIO;
+    const bottomY = h * LANE_BOTTOM_Y_RATIO;
     const topHalf = w * LANE_TOP_HALF_RATIO;
     const bottomHalf = w * LANE_BOTTOM_HALF_RATIO;
     const center = w / 2;
@@ -1252,8 +1288,8 @@ export class BowlingSimulator {
   }
 
   private project(x: number, y: number, w: number, h: number): { x: number; y: number } {
-    const topY = h * 0.08;
-    const bottomY = h * 0.98;
+    const topY = h * LANE_TOP_Y_RATIO;
+    const bottomY = h * LANE_BOTTOM_Y_RATIO;
     const yy = clamp(y, 0, 1.05);
     const half = this.halfWidthAt(yy, w);
     return {

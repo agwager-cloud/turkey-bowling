@@ -10,6 +10,7 @@ export interface PlayerSummary {
   wins: number;
   losses: number;
   connected: boolean;
+  participating: boolean;
 }
 
 export interface RoomState {
@@ -25,6 +26,7 @@ export interface RoomState {
 
 export interface LaneMatchup {
   id: string;
+  createdAt: number;
   lane: number;
   playerA: PlayerSummary;
   playerB: PlayerSummary | null;
@@ -72,6 +74,12 @@ export interface BowlerScorecard {
   mathAttempts: number[];
 }
 
+export interface BowlOffRound {
+  round: number;
+  playerAScore: number;
+  playerBScore: number;
+}
+
 export interface LaneMatchState extends LaneMatchup {
   games: BowlerScorecard[];
   currentPlayerId: string | null;
@@ -79,6 +87,11 @@ export interface LaneMatchState extends LaneMatchup {
   winnerId: string | null;
   loserId: string | null;
   tieBreak: boolean;
+  bowlOffActive: boolean;
+  bowlOffRound: number;
+  bowlOffPlayerAScore: number | null;
+  bowlOffPlayerBScore: number | null;
+  bowlOffHistory: BowlOffRound[];
   turnEndsAt: number | null;
   disconnectedPlayerId: string | null;
   reconnectEndsAt: number | null;

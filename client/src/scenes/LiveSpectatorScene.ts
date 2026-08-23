@@ -17,6 +17,8 @@ export class LiveSpectatorScene extends BaseBowlingScene {
   private lastMatchFingerprint = '';
   private spectatorPlayerId: string | null = null;
   private spectatorStandingBefore = 10;
+  private spectatorGameAtRelease?: BowlerScorecard;
+  private spectatorBowlOff = false;
 
   constructor() { super('LiveSpectatorScene'); }
 
@@ -26,6 +28,7 @@ export class LiveSpectatorScene extends BaseBowlingScene {
     window.clearTimeout(this.returnTimer);
     this.returnTimer = 0;
     this.lastMatchFingerprint = '';
+    this.spectatorBowlOff = false;
     this.simulator?.destroy();
     this.simulator = undefined;
 
@@ -39,6 +42,7 @@ export class LiveSpectatorScene extends BaseBowlingScene {
       network.on('bowlingStarted', (state) => {
         appState.room = state.room;
         appState.tournament = state;
+        appState.matchups = state.matches;
         if (this.shouldReturnToOwnGame(state)) return void this.returnToOwnGame();
         const fingerprint = watchedMatchFingerprint(state, matchId);
         if (fingerprint !== this.lastMatchFingerprint) this.render(state);
@@ -46,6 +50,7 @@ export class LiveSpectatorScene extends BaseBowlingScene {
       network.on('bowlingState', (state) => {
         appState.room = state.room;
         appState.tournament = state;
+        appState.matchups = state.matches;
         if (this.shouldReturnToOwnGame(state)) return void this.returnToOwnGame();
         const fingerprint = watchedMatchFingerprint(state, matchId);
         if (fingerprint !== this.lastMatchFingerprint) this.render(state);
@@ -104,7 +109,7 @@ export class LiveSpectatorScene extends BaseBowlingScene {
 
   private shouldReturnToOwnGame(state: TournamentState): boolean {
     const me = state.room.players.find((player) => player.id === appState.playerId);
-    if (me?.isHost) return false;
+    if (!me || me.participating === false) return false;
     const ownMatch = findOwnMatch(state);
     return Boolean(ownMatch && !ownMatch.complete && ownMatch.playerB);
   }
@@ -132,13 +137,13 @@ export class LiveSpectatorScene extends BaseBowlingScene {
     const activePlayer = playerInMatch(match, activePlayerId);
     const activeGame = activePlayerId ? match.games.find((game) => game.playerId === activePlayerId) : undefined;
     const displayedGame = activeGame ?? match.games[0];
-    const standingPins = displayedGame?.standingPins ?? fallbackStandingPins(displayedGame);
+    const standingPins = match.bowlOffActive ? fullRackPins() : displayedGame?.standingPins ?? fallbackStandingPins(displayedGame);
     const laneLabel = match.championship ? '👑 Championship Lane' : `Lane ${match.lane}`;
 
     this.ui.innerHTML = `
-      <div class="bowling-shell interactive realistic-bowling-shell live-spectator-shell">
+      <div class="bowling-shell interactive realistic-bowling-shell live-spectator-shell${match.bowlOffActive ? ' bowl-off-shell' : ''}">
         <header class="bowling-top panel">
-          <div><div class="bowling-lane-title">${laneLabel} <span class="global-live-pill">● LIVE</span></div></div>
+          <div><div class="bowling-lane-title">${laneLabel} <span class="global-live-pill">● LIVE</span>${match.bowlOffActive ? '<span class="bowl-off-live-pill">🔥 BOWL-OFF</span>' : ''}</div></div>
           <div class="bowling-meta">
             <span>LEVEL ${state.room.level}</span>
             <button id="spectator-matchups" class="host-nav-btn spectator-nav-btn" type="button">← BACK TO MATCHUPS</button>
@@ -148,6 +153,7 @@ export class LiveSpectatorScene extends BaseBowlingScene {
         </header>
         <main class="bowling-main realistic-bowling-main">
           <section class="score-panel panel">
+            ${match.bowlOffActive ? renderBowlOffBoard(match) : ''}
             ${renderPlayerHeader(match.playerA.name, match.playerA.id, match.currentPlayerId, match.winnerId)}
             ${renderScorecard(match.games.find((game) => game.playerId === match.playerA.id))}
             ${match.playerB ? `${renderPlayerHeader(match.playerB.name, match.playerB.id, match.currentPlayerId, match.winnerId)}${renderScorecard(match.games.find((game) => game.playerId === match.playerB!.id))}` : '<div class="bye-card">🦃 BYE — no live bowling on this lane.</div>'}
@@ -157,13 +163,13 @@ export class LiveSpectatorScene extends BaseBowlingScene {
               <canvas id="bowling-sim-canvas" class="bowling-sim-canvas" aria-label="Live spectator view of the bowling lane."></canvas>
               <div class="sim-stage-hud">
                 <span id="sim-speed">BALL SPEED — KM/H</span>
-                <strong id="sim-shot-note">${match.complete ? 'MATCH COMPLETE' : lanePaused ? 'MATCH PAUSED • RECONNECTING' : activePlayer ? `WATCHING ${escapeHtml(activePlayer.name)}` : 'LIVE MATCH'}</strong>
+                <strong id="sim-shot-note">${match.complete ? 'MATCH COMPLETE' : lanePaused ? 'MATCH PAUSED • RECONNECTING' : match.bowlOffActive && activePlayer ? `🔥 BOWL-OFF • WATCHING ${escapeHtml(activePlayer.name)}` : activePlayer ? `WATCHING ${escapeHtml(activePlayer.name)}` : 'LIVE MATCH'}</strong>
               </div>
             </div>
             <div class="turn-callout ${lanePaused ? 'disconnect-paused' : 'spectating-turn'}">
-              <span>${match.complete ? 'MATCH COMPLETE' : lanePaused ? `${escapeHtml(disconnectedName)} DISCONNECTED — MATCH PAUSED` : mathGame && activePlayer ? `${escapeHtml(activePlayer.name)} — SCORE CHECK` : activePlayer ? `LIVE • ${escapeHtml(activePlayer.name)} — FRAME ${activeGame?.currentFrame ?? 1}` : 'LIVE MATCH'}</span>
+              <span>${match.complete ? 'MATCH COMPLETE' : lanePaused ? `${escapeHtml(disconnectedName)} DISCONNECTED — MATCH PAUSED` : match.bowlOffActive && activePlayer ? `🔥 BOWL-OFF ROUND ${match.bowlOffRound} • ${escapeHtml(activePlayer.name)} BOWLING` : mathGame && activePlayer ? `${escapeHtml(activePlayer.name)} — SCORE CHECK` : activePlayer ? `LIVE • ${escapeHtml(activePlayer.name)} — FRAME ${activeGame?.currentFrame ?? 1}` : 'LIVE MATCH'}</span>
             </div>
-            <div class="frame-progress">${activePlayer && activeGame ? `${escapeHtml(activePlayer.name)} • ${frameStatus(activeGame)}` : 'Waiting for the next live action…'}</div>
+            <div class="frame-progress">${match.bowlOffActive ? bowlOffStatus(match) : activePlayer && activeGame ? `${escapeHtml(activePlayer.name)} • ${frameStatus(activeGame)}` : 'Waiting for the next live action…'}</div>
             ${lanePaused ? renderReconnectPanel(disconnectedName) : renderGlobalSpectatorPanel(activePlayer, activeGame, match, state.room.level, mathFrame)}
             <div class="global-spectator-note">Live spectator view mirrors the real lane. Aim, hook, power/release controls and private keypad entry are intentionally hidden.</div>
           </section>
@@ -182,7 +188,7 @@ export class LiveSpectatorScene extends BaseBowlingScene {
 
     if (lanePaused && match.reconnectEndsAt) this.runReconnectClock(match.reconnectEndsAt);
     else if (mathGame && mathFrame !== undefined) this.runMathClock(mathGame.mathEndsAt, state.room.level);
-    else if (activePlayer && activeGame && match.currentPlayerId === activePlayer.id && !activeGame.complete) this.runShotClock(match.turnEndsAt);
+    else if (activePlayer && activeGame && match.currentPlayerId === activePlayer.id && (!activeGame.complete || match.bowlOffActive)) this.runShotClock(match.turnEndsAt);
 
     if (match.complete) {
       window.clearTimeout(this.returnTimer);
@@ -261,6 +267,7 @@ export class LiveSpectatorScene extends BaseBowlingScene {
     const match = state?.matches.find((candidate) => candidate.id === shot.matchId);
     const bowler = match ? playerInMatch(match, shot.playerId) : null;
     if (!match || !bowler) return;
+    this.spectatorBowlOff = match.bowlOffActive;
 
     cancelAnimationFrame(this.shotClockFrame);
     this.shotClockFrame = 0;
@@ -279,7 +286,10 @@ export class LiveSpectatorScene extends BaseBowlingScene {
     let impactPromise: Promise<void> | null = null;
     let celebrationShown = false;
     const gameAtRelease = match.games.find((game) => game.playerId === shot.playerId);
-    const anticipatedCelebration = gameAtRelease ? clearedRackCelebration(gameAtRelease, this.spectatorStandingBefore) : null;
+    this.spectatorGameAtRelease = gameAtRelease;
+    const anticipatedCelebration = this.spectatorBowlOff
+      ? bowlOffCelebrationForCount(this.spectatorStandingBefore)
+      : gameAtRelease ? clearedRackCelebration(gameAtRelease, this.spectatorStandingBefore) : null;
     const playImpact = () => {
       if (!impactPromise) impactPromise = audioDirector.playPinImpact();
     };
@@ -288,6 +298,7 @@ export class LiveSpectatorScene extends BaseBowlingScene {
       celebrationShown = true;
       this.showBowlingCelebration(anticipatedCelebration);
       if (anticipatedCelebration.kind === 'strike') audioDirector.playCheer();
+      else audioDirector.playSpare();
     };
 
     let result: BowlingShotResult;
@@ -301,7 +312,8 @@ export class LiveSpectatorScene extends BaseBowlingScene {
         releaseInGreen: shot.releaseInGreen,
         seed: shot.seed,
         onLoudPinImpact: playImpact,
-        onRackCleared: showCelebration
+        onRackCleared: showCelebration,
+        onZeroPinMissAtDeck: () => audioDirector.playZeroPins()
       });
     } catch {
       return;
@@ -309,18 +321,21 @@ export class LiveSpectatorScene extends BaseBowlingScene {
     if (!this.scene.isActive() || !this.ui || this.spectatorPlayerId !== shot.playerId) return;
 
     if (speed) speed.textContent = `BALL SPEED ${result.speedKmh.toFixed(1)} KM/H`;
-    const label = shotResultLabel(result, this.spectatorStandingBefore);
+    const label = this.spectatorBowlOff
+      ? bowlOffShotResultLabel(result)
+      : shotResultLabel(gameAtRelease, result, this.spectatorStandingBefore);
     if (note) note.textContent = label;
     if (status) status.textContent = label;
 
-    const latestMatch = appState.tournament?.matches.find((candidate) => candidate.id === shot.matchId);
-    const latestGame = latestMatch?.games.find((game) => game.playerId === shot.playerId);
-    const celebration = latestGame ? shotCelebration(latestGame, result, this.spectatorStandingBefore) : null;
+    const celebration = this.spectatorBowlOff
+      ? bowlOffCelebration(result)
+      : gameAtRelease ? shotCelebration(gameAtRelease, result, this.spectatorStandingBefore) : null;
     if (!result.gutter && result.knockedPins.length > 2 && !impactPromise) playImpact();
     if (celebration && !celebrationShown) {
       celebrationShown = true;
       this.showBowlingCelebration(celebration);
       if (celebration.kind === 'strike') audioDirector.playCheer();
+      else audioDirector.playSpare();
     }
   }
 
@@ -336,7 +351,9 @@ export class LiveSpectatorScene extends BaseBowlingScene {
     const note = this.ui.querySelector<HTMLElement>('#sim-shot-note');
     const status = this.ui.querySelector<HTMLElement>('#spectator-live-status');
     if (speed && result.speedKmh > 0) speed.textContent = `BALL SPEED ${result.speedKmh.toFixed(1)} KM/H`;
-    const label = shotResultLabel(authoritative, this.spectatorStandingBefore);
+    const label = this.spectatorBowlOff
+      ? bowlOffShotResultLabel(authoritative)
+      : shotResultLabel(this.spectatorGameAtRelease, authoritative, this.spectatorStandingBefore);
     if (note) note.textContent = label;
     if (status) status.textContent = `Official result: ${label}`;
   }
@@ -434,12 +451,12 @@ function renderGlobalSpectatorPanel(
     </div>`;
   }
 
-  if (match.currentPlayerId === player.id && !game.complete) {
-    return `<div class="spectator-turn-panel live">
-      <div class="spectator-live-header"><span class="live-dot">LIVE</span><strong>${escapeHtml(player.name)}'s bowling attempt</strong></div>
-      <div id="spectator-live-status" class="spectator-live-status">They are setting up the shot. Aim, hook and power/release meters stay private.</div>
+  if (match.currentPlayerId === player.id && (!game.complete || match.bowlOffActive)) {
+    return `<div class="spectator-turn-panel live${match.bowlOffActive ? ' bowl-off-spectator-panel' : ''}">
+      <div class="spectator-live-header"><span class="live-dot">LIVE</span><strong>${match.bowlOffActive ? `🔥 BOWL-OFF ROUND ${match.bowlOffRound} • ` : ''}${escapeHtml(player.name)}'s bowling attempt</strong></div>
+      <div id="spectator-live-status" class="spectator-live-status">${match.bowlOffActive ? 'Fresh rack of 10 • one ball only. Higher pin count wins this round.' : 'They are setting up the shot. Aim, hook and power/release meters stay private.'}</div>
       <div class="spectator-shot-clock-row"><span>SHOT CLOCK</span><strong id="spectator-shot-clock">15s</strong></div>
-      <small>When the ball is released, the exact trajectory, speed, pin collisions and celebration replay here.</small>
+      <small>${match.bowlOffActive ? 'If both players knock down the same number, another Bowl-Off round starts with two new full racks.' : 'When the ball is released, the exact trajectory, speed, pin collisions and celebration replay here.'}</small>
     </div>`;
   }
 
@@ -462,7 +479,12 @@ function renderMiniScorecard(game: BowlerScorecard, focusFrame: number): string 
 }
 
 function findOwnMatch(state: TournamentState): LaneMatchState | undefined {
-  return state.matches.find((match) => match.playerA.id === appState.playerId || match.playerB?.id === appState.playerId);
+  return state.matches
+    .filter((match) => !match.complete && (match.playerA.id === appState.playerId || match.playerB?.id === appState.playerId))
+    .sort((a, b) => b.createdAt - a.createdAt)[0]
+    ?? state.matches
+      .filter((match) => match.playerA.id === appState.playerId || match.playerB?.id === appState.playerId)
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
 }
 
 function playerInMatch(match: LaneMatchState, playerId: string | null): PlayerSummary | null {
@@ -480,12 +502,58 @@ function watchedMatchFingerprint(state: TournamentState, matchId: string): strin
     currentPlayerId: match.currentPlayerId,
     complete: match.complete,
     winnerId: match.winnerId,
+    tieBreak: match.tieBreak,
+    bowlOffActive: match.bowlOffActive,
+    bowlOffRound: match.bowlOffRound,
+    bowlOffPlayerAScore: match.bowlOffPlayerAScore,
+    bowlOffPlayerBScore: match.bowlOffPlayerBScore,
+    bowlOffHistory: match.bowlOffHistory,
     turnEndsAt: match.turnEndsAt,
     disconnectedPlayerId: match.disconnectedPlayerId,
     reconnectEndsAt: match.reconnectEndsAt,
     forfeitPlayerId: match.forfeitPlayerId,
     games: match.games
   });
+}
+
+function fullRackPins(): number[] {
+  return [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+}
+
+function bowlOffStatus(match: LaneMatchState): string {
+  const a = match.bowlOffPlayerAScore === null ? '—' : String(match.bowlOffPlayerAScore);
+  const b = match.bowlOffPlayerBScore === null ? '—' : String(match.bowlOffPlayerBScore);
+  return `Bowl-Off Round ${match.bowlOffRound} • ${escapeHtml(match.playerA.name)} ${a} – ${b} ${escapeHtml(match.playerB?.name ?? 'Opponent')} • fresh rack every bowl`;
+}
+
+function renderBowlOffBoard(match: LaneMatchState): string {
+  const aScore = match.bowlOffPlayerAScore === null ? '—' : String(match.bowlOffPlayerAScore);
+  const bScore = match.bowlOffPlayerBScore === null ? '—' : String(match.bowlOffPlayerBScore);
+  const previous = match.bowlOffHistory.length
+    ? `<div class="bowl-off-history">${match.bowlOffHistory.slice(-3).map((round) => `<span>R${round.round}: <b>${round.playerAScore}–${round.playerBScore}</b></span>`).join('')}</div>`
+    : '<div class="bowl-off-history"><span>First Bowl-Off round</span></div>';
+  return `<div class="bowl-off-board spectator-bowl-off-board" role="status" aria-live="polite">
+    <div class="bowl-off-board-title"><span>🔥</span><strong>BOWL-OFF</strong><em>ROUND ${match.bowlOffRound}</em></div>
+    <div class="bowl-off-rule">TIED AFTER 10 FRAMES • ONE BALL EACH • FRESH 10-PIN RACK • HIGHER COUNT WINS</div>
+    <div class="bowl-off-scores"><span><small>${escapeHtml(match.playerA.name)}</small><strong>${aScore}</strong></span><b>VS</b><span><small>${escapeHtml(match.playerB?.name ?? 'Opponent')}</small><strong>${bScore}</strong></span></div>
+    ${previous}
+  </div>`;
+}
+
+function bowlOffShotResultLabel(result: BowlingShotResult): string {
+  if (result.gutter && result.knockedPins.length === 0) return '🔥 BOWL-OFF • GUTTER — 0 PINS';
+  if (result.knockedPins.length === 10) return '🔥 BOWL-OFF STRIKE • 10 PINS!';
+  if (result.knockedPins.length === 0) return '🔥 BOWL-OFF • 0 PINS';
+  return `🔥 BOWL-OFF • ${result.knockedPins.length} PIN${result.knockedPins.length === 1 ? '' : 'S'} DOWN`;
+}
+
+function bowlOffCelebrationForCount(standingBefore: number): BowlingCelebration | null {
+  if (standingBefore !== 10) return null;
+  return { kind: 'strike', title: 'BOWL-OFF STRIKE!', subtitle: 'Maximum pressure • 10 pins', graphic: '🔥 🎳 🔥' };
+}
+
+function bowlOffCelebration(result: BowlingShotResult): BowlingCelebration | null {
+  return result.knockedPins.length === 10 ? bowlOffCelebrationForCount(10) : null;
 }
 
 interface BowlingCelebration {
@@ -506,31 +574,96 @@ function clearedRackCelebration(game: BowlerScorecard, standingBefore: number): 
 }
 
 function shotCelebration(game: BowlerScorecard, result: BowlingShotResult, standingBefore: number): BowlingCelebration | null {
-  if (standingBefore < 10 && standingBefore > 0 && result.knockedPins.length === standingBefore) {
+  const clearKind = rackClearKind(game, result.knockedPins.length, standingBefore);
+  if (clearKind === 'spare') {
     return { kind: 'spare', title: 'SPARE!', subtitle: 'Every remaining pin cleaned up', graphic: '✨ 🎳 ✨' };
   }
-  if (standingBefore !== 10 || result.knockedPins.length !== 10) return null;
+  if (clearKind !== 'strike') return null;
+
   const previousStreak = trailingStrikeCount(game.frames);
   const streak = previousStreak + 1;
-  const frontSeven = streak === 7 && flattenedRolls(game.frames).every((roll) => roll === 10);
+  const frontSeven = streak === 7 && previousFramesAreAllStrikes(game.frames);
   const names: Record<number, [string, string]> = {
-    1: ['STRIKE!', 'Pocket power'], 2: ['DOUBLE!', 'Two strikes in a row'], 3: ['TURKEY!', 'Three strikes in a row'],
-    4: ['HAMBONE!', 'Four strikes in a row'], 5: ['FIVE-BAGGER!', 'Five strikes in a row'], 6: ['SIX-PACK!', 'Six strikes in a row'],
-    7: [frontSeven ? 'FRONT SEVEN!' : 'SEVEN-BAGGER!', 'Seven strikes in a row'], 8: ['EIGHT-BAGGER!', 'Eight strikes in a row'],
-    9: ['GOLDEN TURKEY!', 'Nine strikes in a row'], 10: ['TEN-BAGGER!', 'Ten strikes in a row'],
-    11: ['ELEVEN-BAGGER!', 'Eleven strikes in a row'], 12: ['PERFECT 300!', 'Twelve strikes • perfect game']
+    1: ['STRIKE!', 'Pocket power'],
+    2: ['DOUBLE!', 'Two strikes in a row'],
+    3: ['TURKEY!', 'Three strikes in a row'],
+    4: ['HAMBONE!', 'Four strikes in a row'],
+    5: ['FIVE-BAGGER!', 'Five strikes in a row'],
+    6: ['SIX-PACK!', 'Six strikes in a row'],
+    7: [frontSeven ? 'FRONT SEVEN!' : 'SEVEN-BAGGER!', 'Seven strikes in a row'],
+    8: ['EIGHT-BAGGER!', 'Eight strikes in a row'],
+    9: ['GOLDEN TURKEY!', 'Nine strikes in a row'],
+    10: ['TEN-BAGGER!', 'Ten strikes in a row'],
+    11: ['ELEVEN-BAGGER!', 'Eleven strikes in a row'],
+    12: ['PERFECT 300!', 'Twelve strikes • perfect game']
   };
   const [title, subtitle] = names[Math.min(12, streak)] ?? [`${streak}-BAGGER!`, `${streak} strikes in a row`];
   const graphic = streak === 3 ? '🦃' : streak === 4 ? '🍖 🎳' : streak === 9 ? '✨ 🦃 ✨' : streak >= 12 ? '🏆 300 🏆' : '💥 🎳 💥';
   return { kind: 'strike', title, subtitle, graphic };
 }
 
-function flattenedRolls(frames: number[][]): number[] { return frames.flatMap((frame) => frame); }
+function rackClearKind(game: BowlerScorecard, knockedCount: number, standingBefore: number): 'strike' | 'spare' | null {
+  if (standingBefore <= 0 || knockedCount !== standingBefore) return null;
+  const frameIndex = Math.max(0, Math.min(9, game.currentFrame - 1));
+  const rolls = game.frames[frameIndex] ?? [];
+
+  if (frameIndex < 9) {
+    if (rolls.length === 0 && knockedCount === 10) return 'strike';
+    if (rolls.length === 1 && (rolls[0] ?? 0) + knockedCount === 10) return 'spare';
+    return null;
+  }
+
+  // Tenth-frame rack context matters because bonus balls may start on a fresh rack.
+  if (rolls.length === 0) return knockedCount === 10 ? 'strike' : null;
+  if (rolls.length === 1) {
+    const first = rolls[0] ?? 0;
+    if (first === 10) return knockedCount === 10 ? 'strike' : null;
+    return first + knockedCount === 10 ? 'spare' : null;
+  }
+  if (rolls.length === 2) {
+    const first = rolls[0] ?? 0;
+    const second = rolls[1] ?? 0;
+    if (first === 10) {
+      if (second === 10) return knockedCount === 10 ? 'strike' : null;
+      return second + knockedCount === 10 ? 'spare' : null;
+    }
+    // A third ball after a first-two-ball spare starts from a fresh rack.
+    return knockedCount === 10 ? 'strike' : null;
+  }
+  return null;
+}
+
+function frameStrikeMarks(rolls: number[], frameIndex: number): boolean[] {
+  if (frameIndex < 9) return rolls.length ? [rolls[0] === 10] : [];
+  const marks: boolean[] = [];
+  const first = rolls[0];
+  const second = rolls[1];
+  const third = rolls[2];
+  if (first !== undefined) marks.push(first === 10);
+  if (second !== undefined) marks.push(first === 10 && second === 10);
+  if (third !== undefined) {
+    const freshRackForThird = (first === 10 && second === 10) || ((first ?? 0) + (second ?? 0) === 10 && first !== 10);
+    marks.push(freshRackForThird && third === 10);
+  }
+  return marks;
+}
+
 function trailingStrikeCount(frames: number[][]): number {
-  const rolls = flattenedRolls(frames);
   let count = 0;
-  for (let i = rolls.length - 1; i >= 0 && rolls[i] === 10; i--) count++;
+  for (let frameIndex = Math.min(9, frames.length - 1); frameIndex >= 0; frameIndex--) {
+    const marks = frameStrikeMarks(frames[frameIndex] ?? [], frameIndex);
+    if (!marks.length) continue;
+    for (let i = marks.length - 1; i >= 0; i--) {
+      if (!marks[i]) return count;
+      count++;
+    }
+  }
   return count;
+}
+
+function previousFramesAreAllStrikes(frames: number[][]): boolean {
+  const completed = frames.slice(0, 6);
+  return completed.length >= 6 && completed.every((frame) => frame[0] === 10);
 }
 
 function renderPlayerHeader(name: string, id: string, turnId: string | null, winnerId: string | null): string {
@@ -558,11 +691,13 @@ function renderRollCells(rolls: number[], tenth: boolean): string {
 function formatRollSymbol(rolls: number[], index: number, tenth: boolean): string {
   const roll = rolls[index];
   if (roll === undefined) return '';
-  if (roll === 10) return 'X';
-  if (roll === 0) return '-';
+  // A second-ball 10 can still be a spare (for example 0 + 10). Check
+  // spare context before treating a raw 10-pin roll as a strike.
   if (!tenth && index === 1 && (rolls[0] ?? 0) + roll === 10) return '/';
   if (tenth && index === 1 && rolls[0] !== 10 && (rolls[0] ?? 0) + roll === 10) return '/';
   if (tenth && index === 2 && rolls[0] === 10 && rolls[1] !== 10 && (rolls[1] ?? 0) + roll === 10) return '/';
+  if (roll === 10) return 'X';
+  if (roll === 0) return '-';
   return String(roll);
 }
 
@@ -580,10 +715,11 @@ function fallbackStandingPins(game?: BowlerScorecard): number[] {
   return Array.from({ length: standing }, (_, index) => index);
 }
 
-function shotResultLabel(result: BowlingShotResult, standingBefore: number): string {
+function shotResultLabel(game: BowlerScorecard | undefined, result: BowlingShotResult, standingBefore: number): string {
   if (result.gutter && result.knockedPins.length === 0) return 'GUTTER BALL';
-  if (standingBefore === 10 && result.knockedPins.length === 10) return '💥 STRIKE!';
-  if (standingBefore < 10 && result.knockedPins.length === standingBefore) return '✨ SPARE!';
+  const clearKind = game ? rackClearKind(game, result.knockedPins.length, standingBefore) : null;
+  if (clearKind === 'strike') return '💥 STRIKE!';
+  if (clearKind === 'spare') return '✨ SPARE!';
   if (result.knockedPins.length === 0) return 'MISS — 0 PINS';
   return `${result.knockedPins.length} PIN${result.knockedPins.length === 1 ? '' : 'S'} DOWN`;
 }

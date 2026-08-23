@@ -9,13 +9,26 @@ export class MatchupScene extends BaseBowlingScene {
   private countdownTimer = 0;
   private ui?: HTMLDivElement;
   private laneScrollLeft = 0;
+  private laneAnchorMatchId: string | null = null;
+  private laneDefaultApplied = false;
+  private laneInteractionUntil = 0;
+  private deferredRenderTimer = 0;
   private leaderboardScrollTop = 0;
+  private managePlayersOpen = false;
+  private participationBusy = false;
 
   constructor() { super('MatchupScene'); }
 
   create(): void {
     this.setupBaseScene();
-    if (!appState.room || appState.matchups.length === 0) return void this.scene.start('LobbyScene');
+    this.laneScrollLeft = 0;
+    this.laneAnchorMatchId = null;
+    this.laneDefaultApplied = false;
+    this.laneInteractionUntil = 0;
+    this.participationBusy = false;
+    window.clearTimeout(this.deferredRenderTimer);
+    this.deferredRenderTimer = 0;
+    if (!appState.room || (appState.matchups.length === 0 && appState.room.status === 'lobby')) return void this.scene.start('LobbyScene');
     this.ui = createSceneUi();
     this.render();
     this.countdownTimer = window.setInterval(() => this.updateCountdown(), 150);
@@ -34,6 +47,7 @@ export class MatchupScene extends BaseBowlingScene {
       network.on('bowlingStarted', (state) => {
         appState.room = state.room;
         appState.tournament = state;
+        appState.matchups = matchupSummaries(state.matches);
         appState.roundResult = null;
         const myMatch = findMyLiveMatch(state.matches);
         if (myMatch && !myMatch.complete && myMatch.playerB) this.scene.start('BowlingScene');
@@ -42,22 +56,24 @@ export class MatchupScene extends BaseBowlingScene {
       network.on('bowlingState', (state) => {
         appState.room = state.room;
         appState.tournament = state;
+        appState.matchups = matchupSummaries(state.matches);
         const me = state.room.players.find((player) => player.id === appState.playerId);
         const myMatch = findMyLiveMatch(state.matches);
-        // Hosts may deliberately inspect the class board while their own lane
-        // continues. Everyone else is automatically returned to their own game
-        // if they become an active participant.
-        if (!me?.isHost && myMatch && !myMatch.complete && myMatch.playerB) {
+        // A host may inspect the board while already playing so the OPT OUT
+        // control remains accessible. If the host has just opted back in and
+        // receives a live lane, take them straight into that newly assigned game.
+        if (myMatch && !myMatch.complete && myMatch.playerB && (!me?.isHost || this.participationBusy)) {
+          this.participationBusy = false;
           this.scene.start('BowlingScene');
           return;
         }
-        this.render();
+        this.requestRender();
       }),
       network.on('roundComplete', (result) => {
         appState.room = result.room;
         appState.roundResult = result;
         appState.tournament = result;
-        this.render();
+        this.requestRender();
       }),
       network.on('matchStarted', (message) => {
         appState.room = message.room;
@@ -65,41 +81,55 @@ export class MatchupScene extends BaseBowlingScene {
         appState.matchupEndsAt = message.phaseEndsAt;
         appState.roundResult = null;
         appState.spectatingMatchId = null;
-        this.render();
-        this.centerMyLane();
+        this.requestRender();
       }),
       network.on('finalResults', (results) => {
         appState.room = results.room;
         appState.finalResults = results;
         this.scene.start('FinalResultsScene');
       }),
-      network.on('error', ({ message }) => alert(message))
+      network.on('error', ({ message }) => {
+        this.participationBusy = false;
+        this.requestRender(true);
+        alert(message);
+      })
     );
 
     this.events.once('shutdown', () => {
       window.clearInterval(this.countdownTimer);
+      window.clearTimeout(this.deferredRenderTimer);
+      this.deferredRenderTimer = 0;
       this.cleanup.splice(0).forEach((fn) => fn());
     });
 
-    this.centerMyLane();
+    const initialState = appState.tournament;
+    const me = initialState?.room.players.find((player) => player.id === appState.playerId);
+    const initialMatch = initialState ? findMyLiveMatch(initialState.matches) : undefined;
+    if (initialState?.room.status === 'bowling' && !me?.isHost && initialMatch && !initialMatch.complete && initialMatch.playerB) {
+      this.scene.start('BowlingScene');
+    }
   }
 
   private render(): void {
     if (!this.ui || !appState.room) return;
     const room = appState.room;
+    this.participationBusy = false;
     const me = room.players.find((player) => player.id === appState.playerId);
     const isHost = Boolean(me?.isHost);
     const myLane = appState.matchups.find((match) => isMyMatch(match));
     const myLiveMatch = appState.tournament?.matches.find((match) => isMyMatch(match));
     const myActiveMatch = Boolean(myLiveMatch && !myLiveMatch.complete && myLiveMatch.playerB);
+    const hostParticipating = me?.participating !== false;
     const liveBowling = room.status === 'bowling';
     const firstRoundWaiting = room.status === 'matchup' && appState.matchupEndsAt === null;
     const autoCountdown = room.status === 'matchup' && appState.matchupEndsAt !== null;
-    const canWatchOtherLanes = liveBowling && (isHost || !myActiveMatch);
+    // No device may spectate over its own live match. Hosts who want to teach
+    // from spectator mode can use OPT OUT, then every live lane becomes watchable.
+    const canWatchOtherLanes = liveBowling && !myActiveMatch;
     const leaderboard = sortLeaderboard(room);
     const liveCount = liveBowling ? (appState.tournament?.matches.filter((match) => !match.complete && Boolean(match.playerB)).length ?? 0) : 0;
     const previousTrack = this.ui.querySelector<HTMLDivElement>('#lane-track');
-    if (previousTrack) this.laneScrollLeft = previousTrack.scrollLeft;
+    if (previousTrack) this.captureLanePosition(previousTrack);
     const previousLeaderboard = this.ui.querySelector<HTMLDivElement>('#leaderboard-list');
     if (previousLeaderboard) this.leaderboardScrollTop = previousLeaderboard.scrollTop;
 
@@ -109,6 +139,8 @@ export class MatchupScene extends BaseBowlingScene {
           <div><h1 class="match-title">Lane Matchups</h1>${liveBowling ? `<div class="class-live-summary"><span class="live-dot"></span>${liveCount} LIVE MATCH${liveCount === 1 ? '' : 'ES'} • TAP A LANE TO WATCH</div>` : ''}</div>
           <div class="match-head-actions">
             <div class="level-badge">LEVEL ${room.level}</div>
+            ${isHost ? `<button id="host-participation" class="host-nav-btn host-participation-btn${hostParticipating ? '' : ' opted-out'}" type="button"${this.participationBusy ? ' disabled' : ''} title="${hostParticipating ? 'Stop playing and spectate only' : 'Rejoin from the lowest available lane'}">${this.participationBusy ? 'UPDATING…' : hostParticipating ? '👁 OPT OUT' : '🎳 OPT IN'}</button>` : ''}
+            ${isHost ? '<button id="manage-players" class="host-nav-btn manage-players-trigger" type="button">👥 MANAGE PLAYERS</button>' : ''}
             ${isHost && myActiveMatch ? '<button id="return-game" class="host-nav-btn" type="button">🎳 RETURN TO MY GAME</button>' : ''}
             ${isHost ? '<button id="matchup-return-lobby" class="host-nav-btn return-lobby-trigger" type="button">↩ RETURN TO LOBBY</button>' : ''}
           </div>
@@ -146,22 +178,33 @@ export class MatchupScene extends BaseBowlingScene {
 
         <div class="match-footer panel-lite">
           <div class="match-footer-copy">
-            <strong>${myLane ? `You are on ${myLane.championship ? 'the Championship Lane' : `Lane ${myLane.lane}`}.` : liveBowling ? 'You are waiting for the next matchup.' : ''}</strong>
-            <span>${liveBowling
-              ? canWatchOtherLanes
-                ? 'Choose any lane marked LIVE to spectate the exact bowling action, scores and maths checks.'
-                : 'Your match is still active. The host can inspect other lanes; players return to their own game automatically.'
-              : firstRoundWaiting
-                ? 'The first matchups wait for the host. After that, every new matchup starts automatically after a 5-second countdown.'
-                : room.status === 'round_result'
-                  ? 'The completed round is being processed. New matchups will appear automatically.'
-                  : 'Winners move right, losers move left, and each win adds 1 point.'}</span>
+            <strong>${isHost && !hostParticipating
+              ? 'You are SPECTATING ONLY — you are not in the bowling ladder.'
+              : myLane
+                ? `You are on ${myLane.championship ? 'the Championship Lane' : `Lane ${myLane.lane}`}.`
+                : liveBowling ? 'You are waiting for the next matchup.' : ''}</strong>
+            <span>${isHost && !hostParticipating
+              ? liveBowling
+                ? 'Tap any LIVE lane to spectate. Press OPT IN when you want to rejoin from the lowest available lane.'
+                : 'Press OPT IN to rejoin the next available matchup from the lowest lane.'
+              : liveBowling
+                ? canWatchOtherLanes
+                  ? 'Choose any lane marked LIVE to spectate the exact bowling action, scores and maths checks.'
+                  : isHost
+                    ? 'Your own match is active. Return to your game, or OPT OUT to award your opponent the win and switch to spectator-only mode.'
+                    : 'Your own match is active. You will return to your lane automatically.'
+                : firstRoundWaiting
+                  ? 'The first matchups wait for the host. After that, every new matchup starts automatically after a 5-second countdown.'
+                  : room.status === 'round_result'
+                    ? 'The completed round is being processed. New matchups will appear automatically.'
+                    : 'Winners move right, losers move left, and each win adds 1 point.'}</span>
           </div>
           ${isHost && firstRoundWaiting ? '<button id="begin-first" class="primary-btn matchup-start-btn" type="button">START FIRST MATCHUPS</button>' : ''}
           ${!isHost && firstRoundWaiting ? '<button class="secondary-btn matchup-start-btn" type="button" disabled>WAITING FOR HOST</button>' : ''}
         </div>
 
         ${autoCountdown ? renderCountdownOverlay(myLane) : ''}
+        ${isHost && this.managePlayersOpen ? renderManagePlayersOverlay(room, appState.playerId) : ''}
       </div>`;
 
     this.ui.querySelector<HTMLButtonElement>('#begin-first')?.addEventListener('click', (event) => {
@@ -169,6 +212,23 @@ export class MatchupScene extends BaseBowlingScene {
       button.disabled = true;
       button.textContent = 'STARTING…';
       network.beginRound();
+    });
+    this.ui.querySelector<HTMLButtonElement>('#host-participation')?.addEventListener('click', (event) => {
+      if (!isHost || this.participationBusy) return;
+      const next = !hostParticipating;
+      if (!next && myActiveMatch) {
+        const confirmed = window.confirm('Opt out of the current match? Your opponent will immediately receive the win. You will then be spectator-only until you press OPT IN.');
+        if (!confirmed) return;
+      }
+      this.participationBusy = true;
+      const button = event.currentTarget as HTMLButtonElement;
+      button.disabled = true;
+      button.textContent = 'UPDATING…';
+      network.setHostParticipation(next);
+    });
+    this.ui.querySelector<HTMLButtonElement>('#manage-players')?.addEventListener('click', () => {
+      this.managePlayersOpen = true;
+      this.render();
     });
     this.ui.querySelector<HTMLButtonElement>('#return-game')?.addEventListener('click', () => this.scene.start('BowlingScene'));
     this.ui.querySelector<HTMLButtonElement>('#matchup-return-lobby')?.addEventListener('click', () => this.openReturnLobbyConfirm());
@@ -178,12 +238,63 @@ export class MatchupScene extends BaseBowlingScene {
     this.ui.querySelectorAll<HTMLElement>('[data-own-game]').forEach((card) => {
       card.addEventListener('click', () => this.scene.start('BowlingScene'));
     });
-    this.setupLaneNavigation();
+    this.setupLaneNavigation(isHost);
     this.setupLeaderboardNavigation();
+    this.setupManagePlayersOverlay();
     this.updateCountdown();
   }
 
-  private setupLaneNavigation(): void {
+  private setupManagePlayersOverlay(): void {
+    if (!this.ui || !this.managePlayersOpen) return;
+    const overlay = this.ui.querySelector<HTMLElement>('#manage-players-overlay');
+    if (!overlay) return;
+
+    const close = () => {
+      this.managePlayersOpen = false;
+      this.render();
+    };
+
+    this.ui.querySelector<HTMLButtonElement>('#manage-players-close')?.addEventListener('click', close);
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) close();
+    });
+
+    this.ui.querySelectorAll<HTMLButtonElement>('[data-manage-kick]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const playerId = button.dataset.manageKick;
+        if (!playerId) return;
+        button.disabled = true;
+        button.textContent = 'REMOVING…';
+        network.kickPlayer(playerId);
+      });
+    });
+  }
+
+  private requestRender(force = false): void {
+    if (!force && performance.now() < this.laneInteractionUntil) {
+      window.clearTimeout(this.deferredRenderTimer);
+      this.deferredRenderTimer = window.setTimeout(
+        () => this.render(),
+        Math.max(80, this.laneInteractionUntil - performance.now() + 30)
+      );
+      return;
+    }
+    this.render();
+  }
+
+  private captureLanePosition(track: HTMLDivElement): void {
+    this.laneScrollLeft = track.scrollLeft;
+    const cards = Array.from(track.querySelectorAll<HTMLElement>('.lane-card'));
+    if (!cards.length) return;
+    const trackRect = track.getBoundingClientRect();
+    const centre = trackRect.left + trackRect.width / 2;
+    const closest = cards
+      .map((card) => ({ card, distance: Math.abs((card.getBoundingClientRect().left + card.getBoundingClientRect().right) / 2 - centre) }))
+      .sort((a, b) => a.distance - b.distance)[0]?.card;
+    this.laneAnchorMatchId = closest?.dataset.matchId ?? null;
+  }
+
+  private setupLaneNavigation(isHost: boolean): void {
     if (!this.ui) return;
     const track = this.ui.querySelector<HTMLDivElement>('#lane-track');
     const previous = this.ui.querySelector<HTMLButtonElement>('#lane-prev');
@@ -196,32 +307,70 @@ export class MatchupScene extends BaseBowlingScene {
       next.disabled = maxScroll < 2 || track.scrollLeft >= maxScroll - 2;
     };
 
+    const centreCard = (card: HTMLElement, behavior: ScrollBehavior = 'auto') => {
+      const maxScroll = Math.max(0, track.scrollWidth - track.clientWidth);
+      const targetLeft = Math.max(0, Math.min(maxScroll, card.offsetLeft - (track.clientWidth - card.clientWidth) / 2));
+      track.scrollTo({ left: targetLeft, behavior });
+    };
+
     const moveOneLane = (direction: -1 | 1) => {
       const cards = Array.from(track.querySelectorAll<HTMLElement>('.lane-card'));
       if (cards.length === 0) return;
+      this.laneInteractionUntil = performance.now() + 480;
       const trackRect = track.getBoundingClientRect();
       const currentCentre = track.scrollLeft + track.clientWidth / 2;
       const centres = cards.map((card) =>
         card.getBoundingClientRect().left - trackRect.left + track.scrollLeft + card.clientWidth / 2
       );
-      const targetCentre = direction > 0
-        ? centres.find((centre) => centre > currentCentre + 10) ?? centres[centres.length - 1]
-        : [...centres].reverse().find((centre) => centre < currentCentre - 10) ?? centres[0];
-      const maxScroll = Math.max(0, track.scrollWidth - track.clientWidth);
-      const targetLeft = Math.max(0, Math.min(maxScroll, targetCentre - track.clientWidth / 2));
-      track.scrollTo({ left: targetLeft, behavior: 'smooth' });
+      const targetIndex = direction > 0
+        ? centres.findIndex((centre) => centre > currentCentre + 10)
+        : (() => {
+            for (let index = centres.length - 1; index >= 0; index--) if (centres[index] < currentCentre - 10) return index;
+            return 0;
+          })();
+      const card = cards[targetIndex >= 0 ? targetIndex : cards.length - 1];
+      if (card) {
+        this.laneAnchorMatchId = card.dataset.matchId ?? null;
+        centreCard(card, 'smooth');
+      }
     };
 
     previous.addEventListener('click', () => moveOneLane(-1));
     next.addEventListener('click', () => moveOneLane(1));
+
+    const markInteraction = () => { this.laneInteractionUntil = performance.now() + 420; };
+    track.addEventListener('pointerdown', markInteraction, { passive: true });
+    track.addEventListener('touchstart', markInteraction, { passive: true });
+    track.addEventListener('wheel', markInteraction, { passive: true });
     track.addEventListener('scroll', () => {
-      this.laneScrollLeft = track.scrollLeft;
+      this.laneInteractionUntil = Math.max(this.laneInteractionUntil, performance.now() + 220);
+      this.captureLanePosition(track);
       updateButtons();
     }, { passive: true });
 
     requestAnimationFrame(() => {
       const maxScroll = Math.max(0, track.scrollWidth - track.clientWidth);
-      track.scrollLeft = Math.max(0, Math.min(maxScroll, this.laneScrollLeft));
+      const anchored = this.laneAnchorMatchId
+        ? track.querySelector<HTMLElement>(`[data-match-id="${this.laneAnchorMatchId}"]`)
+        : null;
+
+      if (anchored) {
+        centreCard(anchored);
+      } else if (!this.laneDefaultApplied) {
+        // Host view deliberately opens on the right-most Championship Lane.
+        if (isHost) track.scrollLeft = maxScroll;
+        else {
+          const myLane = appState.matchups.find((match) => isMyMatch(match));
+          const myCard = myLane ? track.querySelector<HTMLElement>(`[data-match-id="${myLane.id}"]`) : null;
+          if (myCard) centreCard(myCard);
+          else track.scrollLeft = Math.max(0, Math.min(maxScroll, this.laneScrollLeft));
+        }
+        this.laneDefaultApplied = true;
+        this.captureLanePosition(track);
+      } else {
+        track.scrollLeft = Math.max(0, Math.min(maxScroll, this.laneScrollLeft));
+        this.captureLanePosition(track);
+      }
       updateButtons();
     });
   }
@@ -304,15 +453,6 @@ export class MatchupScene extends BaseBowlingScene {
     el.textContent = `${Math.max(0, Math.ceil((appState.matchupEndsAt - Date.now()) / 1000))}`;
   }
 
-  private centerMyLane(): void {
-    requestAnimationFrame(() => {
-      if (!this.ui) return;
-      const myLane = appState.matchups.find((match) => isMyMatch(match));
-      const track = this.ui.querySelector<HTMLDivElement>('#lane-track');
-      const myCard = myLane ? this.ui.querySelector<HTMLElement>(`[data-lane="${myLane.lane}"]`) : null;
-      if (track && myCard) track.scrollTo({ left: Math.max(0, myCard.offsetLeft - (track.clientWidth - myCard.clientWidth) / 2), behavior: 'smooth' });
-    });
-  }
 }
 
 function liveStateFor(matchId: string): LaneMatchState | undefined {
@@ -320,7 +460,23 @@ function liveStateFor(matchId: string): LaneMatchState | undefined {
 }
 
 function findMyLiveMatch(matches: LaneMatchState[]): LaneMatchState | undefined {
-  return matches.find((match) => match.playerA.id === appState.playerId || match.playerB?.id === appState.playerId);
+  return matches
+    .filter((match) => !match.complete && (match.playerA.id === appState.playerId || match.playerB?.id === appState.playerId))
+    .sort((a, b) => b.createdAt - a.createdAt)[0]
+    ?? matches
+      .filter((match) => match.playerA.id === appState.playerId || match.playerB?.id === appState.playerId)
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+}
+
+function matchupSummaries(matches: LaneMatchState[]): LaneMatchup[] {
+  return matches.map((match) => ({
+    id: match.id,
+    createdAt: match.createdAt,
+    lane: match.lane,
+    championship: match.championship,
+    playerA: match.playerA,
+    playerB: match.playerB
+  }));
 }
 
 function renderCountdownOverlay(match: LaneMatchup | undefined): string {
@@ -355,24 +511,32 @@ function isMyMatch(match: LaneMatchup): boolean {
 function renderLaneCard(match: LaneMatchup, live: LaneMatchState | undefined, isHost: boolean, canWatchOtherLanes: boolean): string {
   const mine = isMyMatch(match);
   const isLive = Boolean(live && !live.complete && match.playerB);
+  const bowlOff = Boolean(live?.bowlOffActive);
   const finished = Boolean(live?.complete);
   const ownActive = mine && isLive;
   const watchable = isLive && !ownActive && canWatchOtherLanes;
   const hostOwnGame = isHost && ownActive;
   const dataAttribute = watchable ? ` data-watch-match="${match.id}"` : hostOwnGame ? ` data-own-game="${match.id}"` : '';
-  const action = watchable
-    ? '<div class="lane-live-action"><span class="live-dot"></span> WATCH LIVE</div>'
-    : hostOwnGame
-      ? '<div class="lane-live-action own-game">🎳 RETURN TO GAME</div>'
-      : isLive
-        ? '<div class="lane-live-action playing"><span class="live-dot"></span> LIVE</div>'
-        : finished
-          ? '<div class="lane-live-action finished">✓ FINISHED</div>'
-          : '';
+  const action = bowlOff && watchable
+    ? '<div class="lane-live-action bowl-off-action"><span class="live-dot"></span> 🔥 BOWL-OFF • WATCH LIVE</div>'
+    : bowlOff && hostOwnGame
+      ? '<div class="lane-live-action bowl-off-action own-game">🔥 BOWL-OFF • RETURN TO GAME</div>'
+      : bowlOff && isLive
+        ? '<div class="lane-live-action bowl-off-action playing"><span class="live-dot"></span> 🔥 BOWL-OFF LIVE</div>'
+        : watchable
+          ? '<div class="lane-live-action"><span class="live-dot"></span> WATCH LIVE</div>'
+          : hostOwnGame
+            ? '<div class="lane-live-action own-game">🎳 RETURN TO GAME</div>'
+            : isLive
+              ? '<div class="lane-live-action playing"><span class="live-dot"></span> LIVE</div>'
+              : finished
+                ? '<div class="lane-live-action finished">✓ FINISHED</div>'
+                : '';
 
-  return `<article class="lane-card${mine ? ' me' : ''}${match.championship ? ' championship' : ''}${watchable || hostOwnGame ? ' watchable' : ''}${isLive ? ' live-lane' : ''}" data-lane="${match.lane}"${dataAttribute}>
+  return `<article class="lane-card${mine ? ' me' : ''}${match.championship ? ' championship' : ''}${watchable || hostOwnGame ? ' watchable' : ''}${isLive ? ' live-lane' : ''}${bowlOff ? ' bowl-off-lane' : ''}" data-lane="${match.lane}" data-match-id="${match.id}"${dataAttribute}>
     <div class="lane-label"><span>${match.championship ? 'CHAMPIONSHIP LANE' : `LANE ${match.lane}`}</span>${match.championship ? '<span class="crown">👑</span>' : ''}</div>
     ${action}
+    ${bowlOff ? `<div class="bowl-off-lane-banner"><strong>🔥 BOWL-OFF ROUND ${live?.bowlOffRound ?? 1}</strong><span>ONE BALL EACH • FRESH RACK</span></div>` : ''}
     <div class="vs-box">
       <div class="bowler-name">🎳 ${escapeHtml(match.playerA.name)}</div><div class="vs">VS</div>
       <div class="bowler-name">${match.playerB ? `🎳 ${escapeHtml(match.playerB.name)}` : '🦃 BYE'}</div>
@@ -386,6 +550,35 @@ function sortLeaderboard(room: RoomState) {
     if (b.id === room.championId && a.id !== room.championId) return 1;
     return b.wins - a.wins || b.lane - a.lane || a.name.localeCompare(b.name);
   });
+}
+
+function renderManagePlayersOverlay(room: RoomState, hostPlayerId: string): string {
+  const humanPlayers = room.players.filter((player) => !player.isBot);
+  return `
+    <div id="manage-players-overlay" class="modal-backdrop manage-players-backdrop">
+      <section class="panel manage-modal match-manage-modal" role="dialog" aria-modal="true" aria-labelledby="manage-players-title">
+        <div class="match-manage-heading">
+          <div>
+            <h2 id="manage-players-title">Manage Players</h2>
+            <p>${humanPlayers.length} human player${humanPlayers.length === 1 ? '' : 's'} in Room ${escapeHtml(room.code)}</p>
+          </div>
+          <button id="manage-players-close" class="secondary-btn match-manage-close" type="button">✕ CLOSE</button>
+        </div>
+        <div class="match-manage-help">Remove inappropriate player names without returning the whole class to the lobby. Removed players must change their name before they can rejoin.</div>
+        <div class="match-manage-grid">
+          ${humanPlayers.map((player) => `
+            <div class="match-manage-player${player.id === hostPlayerId ? ' host-player' : ''}">
+              <div class="match-manage-player-copy">
+                <strong title="${escapeHtml(player.name)}">${escapeHtml(player.name)}</strong>
+                <span class="${player.connected ? 'online' : 'reconnecting'}">${player.id === hostPlayerId ? 'HOST • YOU' : player.connected ? 'ONLINE' : 'RECONNECTING'}</span>
+              </div>
+              ${player.id === hostPlayerId || player.isHost
+                ? '<span class="match-manage-protected">HOST</span>'
+                : `<button class="danger-btn match-manage-remove" data-manage-kick="${player.id}" type="button">REMOVE</button>`}
+            </div>`).join('')}
+        </div>
+      </section>
+    </div>`;
 }
 
 function renderReturnLobbyConfirm(): string {

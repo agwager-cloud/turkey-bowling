@@ -117,11 +117,12 @@ class NetworkManager {
   // Host-only manual start for the very first class matchup.
   beginRound(): void { this.send({ type: 'begin_round' }); }
   returnToLobby(): void { this.send({ type: 'return_to_lobby' }); }
-  shotStarted(shot: Omit<SpectatorShot, 'matchId' | 'playerId' | 'playerName' | 'standingPins'>): void { this.send({ type: 'shot_started', shot }); }
-  rollBall(knockedPins: number[], speedKmh: number, gutter: boolean): void { this.send({ type: 'roll_ball', knockedPins, speedKmh, gutter }); }
+  shotStarted(matchId: string, shotId: string, shot: Omit<SpectatorShot, 'matchId' | 'playerId' | 'playerName' | 'standingPins'>): void { this.send({ type: 'shot_started', matchId, shotId, shot }); }
+  rollBall(matchId: string, shotId: string, knockedPins: number[], speedKmh: number, gutter: boolean): void { this.send({ type: 'roll_ball', matchId, shotId, knockedPins, speedKmh, gutter }); }
   submitScore(frameIndex: number, total: number): void { this.send({ type: 'submit_score', frameIndex, total }); }
   watchMatch(matchId: string): void { this.send({ type: 'watch_match', matchId }); }
   stopWatchingMatch(): void { this.send({ type: 'stop_watching_match' }); }
+  setHostParticipation(participating: boolean): void { this.send({ type: 'set_host_participation', participating }); }
   devFinishRound(): void { this.send({ type: 'dev_finish_round' }); }
 
   private resolveUrl(): string {

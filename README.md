@@ -1,6 +1,13 @@
-# Turkey Bowling v0.7.21 — Production Endpoint Locked
+# Turkey Bowling v0.7.22 — Heavier Bowling Physics + Camera Framing
 
 Multiplayer ten-pin bowling maths game built with Phaser/Vite on the client and Node.js/WebSockets on the server.
+
+## v0.7.22 bowling feel update
+- Tilted the virtual lane camera upward so the taller regulation-proportion pins are fully visible.
+- Added an explicit ~6.8 kg bowling ball / ~1.59 kg pin mass ratio for ball-to-pin impacts.
+- Reduced ball/pin and pin/pin restitution so collisions feel denser and less springy.
+- Reduced scripted rack-kick translation/spin while preserving deterministic scoring and carry.
+- Increased fallen-pin deck friction and capped excessive angular speed to remove the lightweight/cartwheel feel.
 
 ## Current game
 - 10-frame multiplayer bowling with realistic 2.5D ball/pin physics
