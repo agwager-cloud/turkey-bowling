@@ -1,6 +1,13 @@
-# Turkey Bowling v0.7.25
+# Turkey Bowling v0.7.26
 
-**Recovery release:** restored the known-good v0.7.20 host opt-out, shot-sync stability, gutter/spare SFX, and live-spectator client behaviour, then retained the improved pin artwork/camera/heavier collision feel. Adjacent-pin gap bridging now prevents the ball from threading physically impossible gaps.
+**Physics refinement release built on the recovered v0.7.25 stable baseline.**
+
+- Greatly reduces artificial 7-10 splits. A 7-10 can now occur only on a genuinely poor straight head-ball and at a very low probability.
+- Near-strike pocket shots that miss the strike now overwhelmingly produce a nine-count/single-pin leave instead of leaving both corners.
+- If the ball clearly misses the head pin, pin 1 is protected from scripted rack carry and stays standing.
+- Adds a fallen-pin messenger/sweep collision body so a horizontal pin can skittle through standing pins behind it.
+- Adds more deterministic variation to pin scatter while preserving seeded multiplayer replay.
+- Retains the v0.7.25 recovered host OPT OUT, shot/match ID sync protection, spectator behaviour, gutter `awww` and spare audio.
 
 # Turkey Bowling v0.7.24 — itch.io Packaging Reliability
 
@@ -91,4 +98,4 @@ cd C:\Projects\bowling
 npm run build:itch
 ```
 
-The finished file will be created at `releases\turkey-bowling-itch-v0.7.24.zip`, with `index.html` at the ZIP root.
+The finished file will be created at `releases\turkey-bowling-itch-v0.7.26.zip`, with `index.html` at the ZIP root.

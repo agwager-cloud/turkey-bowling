@@ -101,8 +101,18 @@ const BALL_MASS_KG = 6.80;
 const PIN_MASS_KG = 1.59;
 const BALL_PIN_RESTITUTION = 0.22;
 const PIN_PIN_RESTITUTION = 0.28;
-const PIN_KICK_TRANSLATION_SCALE = 0.82;
-const PIN_KICK_SPIN_SCALE = 0.72;
+const PIN_KICK_TRANSLATION_SCALE = 0.86;
+const PIN_KICK_SPIN_SCALE = 0.78;
+
+// Once a pin is substantially on its side, its full 15-inch body becomes a
+// moving contact shape rather than just the small circular belly footprint.
+// This lets a horizontal messenger pin sweep through pins behind it, which is
+// a major part of real ten-pin carry. The values are deliberately conservative
+// so one fallen pin can skittle a cluster without behaving like a giant bat.
+const FALLEN_PIN_SWEEP_HALF_LENGTH = 0.112;
+const FALLEN_PIN_SWEEP_RADIUS = 0.043;
+const FALLEN_PIN_SWEEP_MIN_SPEED = 0.035;
+const FALLEN_PIN_SWEEP_MIN_FALL = 0.52;
 
 const START_POSITION_WORLD_X = 0.54;
 const SHOT_START_Y = 0.025;
@@ -414,6 +424,7 @@ export class BowlingSimulator {
     }
 
     this.collidePins();
+    this.collideFallenPinSweeps();
     this.movePins(dt);
     this.maybeNotifyLoudPinImpact(ball);
     this.maybeNotifyRackCleared(ball);
@@ -587,6 +598,14 @@ export class BowlingSimulator {
       const zoneStart = rowY - ADJACENT_GAP_Y_TOLERANCE;
       if (ball.y < zoneStart || previousBallY > rowY + 0.025) continue;
 
+      // Reaching an adjacent-pair corridor on a full rack means the ball has
+      // already passed the head pin without touching it. Keep pin 1 standing
+      // for the rest of this shot so a later scripted messenger cannot make it
+      // fall backwards after the ball clearly missed it.
+      if (this.initialStanding.size === 10 && !this.headPinHit && this.initialStanding.has(0)) {
+        this.protectedLeavePins.add(0);
+      }
+
       const timeToRow = (rowY - ball.y) / Math.max(0.15, ball.vy);
       const projectedX = ball.x + ball.vx * timeToRow;
       if (Math.abs(projectedX - midpoint) > ADJACENT_GAP_HALF_WIDTH) continue;
@@ -679,6 +698,71 @@ export class BowlingSimulator {
     }
   }
 
+  private collideFallenPinSweeps(): void {
+    // A real pin lying across the deck is much longer than its circular belly.
+    // Model that fallen body as a short moving capsule. When its swept body
+    // reaches a standing pin, transfer messenger momentum and let that target
+    // skittle naturally into the next row.
+    for (const mover of this.pins) {
+      if (!this.initialStanding.has(mover.id) || !mover.knocked) continue;
+      const fallAmount = clamp(Math.abs(mover.angle) / 1.46, 0, 1);
+      const speed = Math.hypot(mover.vx, mover.vy);
+      if (fallAmount < FALLEN_PIN_SWEEP_MIN_FALL || speed < FALLEN_PIN_SWEEP_MIN_SPEED) continue;
+
+      // A sliding pin tends to lie broadly along its direction of travel. Add a
+      // small angular component so spinning messengers can sweep sideways too.
+      let axisX = mover.vx / Math.max(speed, 0.0001);
+      let axisY = mover.vy / Math.max(speed, 0.0001);
+      const spinSide = Math.sign(mover.angularVelocity || mover.angle || 1);
+      axisX += spinSide * 0.24 * fallAmount;
+      const axisLength = Math.hypot(axisX, axisY) || 1;
+      axisX /= axisLength;
+      axisY /= axisLength;
+
+      const halfLength = FALLEN_PIN_SWEEP_HALF_LENGTH * lerp(0.72, 1, fallAmount);
+      const ax = mover.x - axisX * halfLength;
+      const ay = mover.y - axisY * halfLength;
+      const bx = mover.x + axisX * halfLength;
+      const by = mover.y + axisY * halfLength;
+
+      for (const target of this.pins) {
+        if (target.id === mover.id || !this.initialStanding.has(target.id) || target.knocked) continue;
+        if (this.protectedLeavePins.has(target.id)) continue;
+
+        const abx = bx - ax;
+        const aby = by - ay;
+        const abLenSq = abx * abx + aby * aby;
+        const t = abLenSq > 0.0000001
+          ? clamp(((target.x - ax) * abx + (target.y - ay) * aby) / abLenSq, 0, 1)
+          : 0.5;
+        const closestX = ax + abx * t;
+        const closestY = ay + aby * t;
+        const dx = target.x - closestX;
+        const dy = target.y - closestY;
+        const distance = Math.hypot(dx, dy);
+        const effectiveRadius = FALLEN_PIN_SWEEP_RADIUS + STANDING_PIN_BALL_CONTACT_RADIUS * 0.72;
+        if (distance >= effectiveRadius) continue;
+
+        let nx = distance > 0.0001 ? dx / distance : -axisY;
+        let ny = distance > 0.0001 ? dy / distance : axisX;
+        const sweepEnergy = clamp(speed * (0.78 + 0.34 * fallAmount) + Math.abs(mover.angularVelocity) * 0.014, 0.05, 0.42);
+        const randomness = 0.82 + this.random() * 0.38;
+
+        target.knocked = true;
+        target.vx += (mover.vx * 0.46 + nx * sweepEnergy * 0.72) * randomness;
+        target.vy += (mover.vy * 0.48 + ny * sweepEnergy * 0.34) * (0.86 + this.random() * 0.30);
+        target.angularVelocity += (spinSide * 3.2 + nx * 2.6) * (0.82 + this.random() * 0.40);
+
+        // The messenger gives up some momentum, but keeps enough to continue
+        // through a small cluster just like a pin sliding horizontally through
+        // the back row in real bowling.
+        mover.vx *= 0.82;
+        mover.vy *= 0.84;
+        mover.angularVelocity *= 0.90;
+      }
+    }
+  }
+
   private applyRackEntryDynamics(ball: SimBall, struckPinId: number): void {
     this.rackCarryApplied = true;
 
@@ -687,15 +771,20 @@ export class BowlingSimulator {
     const entrySlope = ball.vx / Math.max(0.15, ball.vy);
     const pocketSide = entryX === 0 ? (this.hook >= 0 ? 1 : -1) : Math.sign(entryX);
 
-    // If the release was outside the green zone, protect at least one back-row
-    // pin BEFORE the visible rack animation develops. Previously the physics
-    // could visibly knock all ten down and finishShot() would then respawn a
-    // corner pin to enforce the non-strike rule. Keeping the leave standing
-    // throughout the animation makes what the player sees match the recorded 9.
-    if (!this.strikeEligible) {
-      const visibleLeave = pocketSide > 0 ? 6 : 9; // far 7/10 corner from entry side
-      this.protectedLeavePins.add(visibleLeave);
+    // If the ball gets past the head pin and first contacts the 2/3 pin or a
+    // deeper pin, the head pin must remain standing. Earlier scripted carry
+    // could magically knock over pin 1 even though neither the ball nor a real
+    // collision chain touched it. Protect it for the whole shot once the first
+    // rack contact proves the ball missed it.
+    if (struckPinId !== 0 && this.initialStanding.has(0)) {
+      this.protectedLeavePins.add(0);
     }
+
+    // A release outside the green zone must not strike, but do not immediately
+    // protect a second corner pin here. Doing so before the carry branch was a
+    // major source of artificial 7-10 splits. High-quality non-strikes will use
+    // this single preferred leave later.
+    const forcedNonStrikeLeave = !this.strikeEligible ? (pocketSide > 0 ? 6 : 9) : null;
 
     // A badly mistimed release should look and score badly even if it happens to
     // clip the rack. Most severe misses only take 1-3 pins and suppress secondary
@@ -756,10 +845,10 @@ export class BowlingSimulator {
       return;
     }
 
-    // Straight balls are intentionally a reliable 6-8 count when they reach
-    // the head-pin area. This mirrors the common "head ball / corner leave"
-    // teaching outcome rather than allowing an unrealistically easy straight
-    // strike through the centre.
+    // Straight head balls can still produce difficult leaves, but a 7-10
+    // should be an exceptional punishment for a genuinely poor delivery rather
+    // than a routine outcome. Better straight shots now favour a single-pin or
+    // simple two-pin leave.
     const headAreaHit = struckPinId === 0 || (Math.abs(entryX) < 0.22 && struckPinId <= 2);
     this.straightHeadBall = hookAmount < 0.12 && headAreaHit;
     if (this.straightHeadBall) {
@@ -767,40 +856,57 @@ export class BowlingSimulator {
       const powerQuality = clamp((this.shotPower - 0.28) / 0.72, 0, 1);
       const quality = 0.55 * releaseQuality + 0.45 * powerQuality;
 
-      // Straight head-ball shots now leave varied, believable back-row spare
-      // combinations. A 7-10 split remains possible, but intentionally rare.
-      // Better straight shots usually leave only 1-2 pins; poorer ones can leave 3.
       const strongLeaves: number[][] = [
-        [6], [9], [7], [8], [5],
-        [6, 7], [8, 9], [7, 8], [3, 6], [5, 9]
+        [6], [9], [7], [8], [5], [3], [4],
+        [6, 7], [8, 9], [7, 8]
       ];
       const mediumLeaves: number[][] = [
-        [6, 7], [8, 9], [6, 8], [7, 9], [3, 6], [5, 9],
-        [6, 7, 8], [7, 8, 9], [3, 6, 7], [5, 8, 9]
+        [6], [9], [7], [8],
+        [6, 7], [8, 9], [3, 6], [5, 9], [6, 8], [7, 9],
+        [6, 7, 8], [7, 8, 9]
       ];
-      const rareSplit = [6, 9]; // 7-10 split: deliberately uncommon
-      // Leaving Aim and Hook untouched is intentionally a poor strike strategy.
-      // Even a perfect meter release only has a tiny chance of carrying all ten.
+
+      // The 7-10 split is now restricted to a distinctly poor straight head
+      // ball and is still rare inside that group. A close-to-strike delivery
+      // cannot randomly turn into a 7-10 split.
+      const genuinelyBadStraight = quality < 0.46
+        && (this.releaseMissSeverity > 0.30 || this.shotPower < 0.52);
+      const sevenTenChance = genuinelyBadStraight ? 0.006 : 0;
       const rareStraightStrikeChance = this.strikeEligible && quality > 0.82
         ? (this.neutralAimAndHook ? 0.012 : 0.035)
         : 0;
+
       let leavePattern: number[];
       if (this.random() < rareStraightStrikeChance) leavePattern = [];
-      else if (this.random() < 0.025) leavePattern = rareSplit;
-      else if (quality > 0.66) leavePattern = strongLeaves[Math.floor(this.random() * strongLeaves.length)];
-      else leavePattern = mediumLeaves[Math.floor(this.random() * mediumLeaves.length)];
+      else if (this.random() < sevenTenChance) leavePattern = [6, 9];
+      else if (quality > 0.72) {
+        // Close straight shots should most commonly score nine, not produce an
+        // impossible split. Choose from the single-pin part of the strong pool.
+        const singleLeaves = [[6], [9], [7], [8], [5], [3], [4]];
+        leavePattern = singleLeaves[Math.floor(this.random() * singleLeaves.length)];
+      } else if (quality > 0.58) {
+        leavePattern = strongLeaves[Math.floor(this.random() * strongLeaves.length)];
+      } else {
+        leavePattern = mediumLeaves[Math.floor(this.random() * mediumLeaves.length)];
+      }
+
+      // A non-green release must leave something standing. If the random branch
+      // happened to choose a strike, convert it into one simple corner leave.
+      if (leavePattern.length === 0 && forcedNonStrikeLeave !== null) {
+        leavePattern = [forcedNonStrikeLeave];
+      }
 
       leavePattern.forEach((id) => this.protectedLeavePins.add(id));
-      const kickStrength = 0.13 + 0.075 * powerQuality;
+      const kickStrength = 0.14 + 0.082 * powerQuality;
       for (let id = 0; id < this.pins.length; id++) {
         if (this.protectedLeavePins.has(id)) continue;
         const x = PIN_LAYOUT[id][0];
         const side = x === 0 ? (this.random() < 0.5 ? -1 : 1) : Math.sign(x);
         this.kickPin(
           id,
-          side * kickStrength * (0.78 + this.random() * 0.48),
-          (0.24 + 0.11 * powerQuality) * (0.82 + this.random() * 0.38),
-          side * (3.4 + this.random() * 3.0)
+          side * kickStrength * (0.72 + this.random() * 0.62),
+          (0.25 + 0.12 * powerQuality) * (0.78 + this.random() * 0.48),
+          side * (3.2 + this.random() * 3.8)
         );
       }
       return;
@@ -865,19 +971,51 @@ export class BowlingSimulator {
       for (let id = 0; id < this.pins.length; id++) {
         const x = PIN_LAYOUT[id][0];
         const side = x === 0 ? (id % 2 ? -pocketSide : pocketSide) : Math.sign(x);
-        this.kickPin(id, side * (fanStrength + 0.05) * (0.85 + this.random() * 0.35), (forwardStrength + 0.04) * (0.85 + this.random() * 0.3), side * (4.2 + carry * 3.6));
+        this.kickPin(id, side * (fanStrength + 0.05) * (0.82 + this.random() * 0.42), (forwardStrength + 0.04) * (0.82 + this.random() * 0.38), side * (4.0 + carry * 3.9));
       }
-    } else if (carry > 0.52) {
-      // Near-pocket shots commonly leave one corner pin rather than looking
-      // like a weak centre hit.
+    } else if (carry > 0.58) {
+      // A genuinely close pocket shot should overwhelmingly be a nine-count.
+      // Explicitly choose ONE believable leave and send the rest of the rack.
+      // This removes the accidental high-frequency 7-10 outcome from the old
+      // branch where both corners could simply survive independently.
       const farCorner = pocketSide > 0 ? 6 : 9;
       const nearCorner = pocketSide > 0 ? 9 : 6;
-      if (this.random() < 0.48 + carry * 0.3) {
-        this.kickPin(nearCorner, pocketSide * (fanStrength + 0.03), forwardStrength, pocketSide * 4.8);
+      const nineCountLeaves = [farCorner, nearCorner, 7, 8, 5];
+      const leaveId = forcedNonStrikeLeave !== null
+        ? forcedNonStrikeLeave
+        : nineCountLeaves[Math.floor(this.random() * nineCountLeaves.length)];
+      this.protectedLeavePins.add(leaveId);
+
+      for (let id = 0; id < this.pins.length; id++) {
+        if (!this.initialStanding.has(id) || this.protectedLeavePins.has(id)) continue;
+        const x = PIN_LAYOUT[id][0];
+        const side = x === 0 ? (this.random() < 0.5 ? -pocketSide : pocketSide) : Math.sign(x);
+        this.kickPin(
+          id,
+          side * (fanStrength + 0.025) * (0.78 + this.random() * 0.48),
+          (forwardStrength + 0.018) * (0.80 + this.random() * 0.40),
+          side * (3.8 + carry * 3.8)
+        );
       }
-      if (this.random() < Math.max(0.08, carry - 0.62)) {
-        this.kickPin(farCorner, -pocketSide * (fanStrength + 0.02), forwardStrength * 0.9, -pocketSide * 4.2);
+    } else if (carry > 0.42) {
+      // Decent but not near-strike pocket entries generally leave one or two
+      // pins. Never manufacture a 7-10 here.
+      const farCorner = pocketSide > 0 ? 6 : 9;
+      const nearCorner = pocketSide > 0 ? 9 : 6;
+      const leavePatterns: number[][] = forcedNonStrikeLeave !== null
+        ? [[forcedNonStrikeLeave], [forcedNonStrikeLeave, 7], [forcedNonStrikeLeave, 8]]
+        : [[farCorner], [nearCorner], [7], [8], [farCorner, 7], [nearCorner, 8], [7, 8]];
+      const leavePattern = leavePatterns[Math.floor(this.random() * leavePatterns.length)];
+      leavePattern.forEach((id) => this.protectedLeavePins.add(id));
+      for (let id = 0; id < this.pins.length; id++) {
+        if (!this.initialStanding.has(id) || this.protectedLeavePins.has(id)) continue;
+        if (this.pins[id].knocked) continue;
+        const x = PIN_LAYOUT[id][0];
+        const side = x === 0 ? (this.random() < 0.5 ? -pocketSide : pocketSide) : Math.sign(x);
+        this.kickPin(id, side * fanStrength * (0.72 + this.random() * 0.54), forwardStrength * (0.76 + this.random() * 0.46), side * (3.0 + carry * 3.4));
       }
+    } else if (forcedNonStrikeLeave !== null) {
+      this.protectedLeavePins.add(forcedNonStrikeLeave);
     }
   }
 
@@ -886,10 +1024,14 @@ export class BowlingSimulator {
     if (!pin || !this.initialStanding.has(id)) return;
     if (this.protectedLeavePins.has(id)) return;
     pin.knocked = true;
-    const energyJitter = 0.92 + this.random() * 0.18;
-    pin.vx += vx * PIN_KICK_TRANSLATION_SCALE * energyJitter;
-    pin.vy += vy * PIN_KICK_TRANSLATION_SCALE * (0.93 + this.random() * 0.16);
-    pin.angularVelocity += spin * PIN_KICK_SPIN_SCALE * (0.88 + this.random() * 0.24);
+    const energyJitter = 0.88 + this.random() * 0.28;
+    // Small deterministic deck scatter keeps repeated-looking racks from
+    // collapsing in exactly the same visual pattern while remaining perfectly
+    // reproducible from the shared shot seed on both players' devices.
+    const lateralScatter = (this.random() * 2 - 1) * (0.014 + Math.abs(vy) * 0.035);
+    pin.vx += vx * PIN_KICK_TRANSLATION_SCALE * energyJitter + lateralScatter;
+    pin.vy += vy * PIN_KICK_TRANSLATION_SCALE * (0.88 + this.random() * 0.26);
+    pin.angularVelocity += spin * PIN_KICK_SPIN_SCALE * (0.82 + this.random() * 0.36);
   }
 
   private pinCarryThreshold(pinId: number): number {
