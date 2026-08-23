@@ -2607,3 +2607,151 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none !important;
     font-size: 8px;
   }
 }
+
+/* ===== v0.7.28 1000x720 host header + compact maths score checks ===== */
+@media (min-width: 700px) and (max-width: 1100px) and (orientation: landscape) {
+  .match-head {
+    gap: 8px;
+    padding: 10px 12px;
+  }
+  .match-head > div:first-child {
+    flex: 0 1 235px;
+    min-width: 0;
+  }
+  .match-title {
+    font-size: clamp(25px, 3vw, 30px);
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .class-live-summary {
+    margin-top: 6px;
+    font-size: 8px;
+    letter-spacing: .25px;
+    white-space: nowrap;
+  }
+  .match-head-actions {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: none;
+    flex-wrap: nowrap;
+    gap: 5px;
+  }
+  .match-head-actions .level-badge {
+    flex: 0 0 auto;
+    padding: 7px 10px;
+    font-size: 11px;
+  }
+  .match-head-actions .host-nav-btn {
+    flex: 0 1 auto;
+    min-width: 0;
+    padding: 6px 8px;
+    font-size: 8px;
+    letter-spacing: 0;
+  }
+  .match-head-actions .host-participation-btn {
+    min-width: 67px;
+    padding-left: 7px;
+    padding-right: 7px;
+  }
+}
+
+@media (min-width: 700px) and (orientation: landscape) {
+  .math-overlay {
+    padding: 10px 14px;
+  }
+  .math-card {
+    width: min(760px, calc(100vw - 32px));
+    max-height: calc(100vh - 20px);
+    overflow: hidden;
+    padding: 13px 18px;
+  }
+  .math-card-independent {
+    width: min(860px, calc(100vw - 32px));
+  }
+  .math-card h2 {
+    margin: 2px 0 7px;
+    font-size: 26px;
+    line-height: 1.05;
+  }
+  .math-kicker {
+    font-size: 9px;
+  }
+  .math-timer-panel {
+    margin-bottom: 6px;
+    padding: 6px 10px;
+  }
+  .math-timer-row strong {
+    font-size: 20px;
+  }
+  .math-teach-box,
+  .math-independent-copy {
+    padding: 7px 10px;
+    font-size: 11px;
+    line-height: 1.25;
+  }
+  .math-score-facts {
+    gap: 8px;
+    margin-top: 6px;
+  }
+  .math-score-facts span {
+    padding: 6px;
+  }
+  .math-score-facts strong {
+    font-size: 20px;
+  }
+  .math-equation {
+    gap: 8px;
+    margin-top: 5px;
+    font-size: 25px;
+  }
+  .math-equation strong {
+    min-width: 42px;
+    min-height: 36px;
+  }
+  .math-scorecard-shell {
+    margin-top: 6px;
+    padding: 6px;
+  }
+  .math-mini-frame {
+    grid-template-rows: 15px 21px 19px;
+  }
+  .math-answer {
+    min-height: 46px;
+    margin: 6px 0;
+    font-size: 29px;
+  }
+  .math-keypad {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .math-keypad button {
+    min-height: 43px;
+    font-size: 18px;
+  }
+  .math-submit {
+    min-height: 42px;
+    margin-top: 6px;
+    font-size: 14px;
+  }
+  .math-feedback {
+    min-height: 16px;
+    margin-top: 4px;
+  }
+  .math-no-keyboard {
+    font-size: 8px;
+  }
+}
+
+/* Keep the familiar 3 x 4 touch keypad on narrow/portrait devices. */
+@media (orientation: portrait), (max-width: 699px) {
+  .math-keypad {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* Short landscape screens retain scroll as a safety fallback. */
+@media (orientation: landscape) and (max-height: 600px) {
+  .math-card {
+    overflow: auto;
+  }
+}

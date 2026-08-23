@@ -14,7 +14,11 @@ export class MatchResultScene extends BaseBowlingScene {
             return void this.scene.start('LobbyScene');
         this.ui = createSceneUi();
         this.render(appState.tournament, appState.roundResult);
-        this.ticker = window.setInterval(() => this.render(appState.tournament, appState.roundResult), 250);
+        // Only update the numeric countdown on the timer tick. Rebuilding this
+        // entire scene every 250 ms used to replace the navigation buttons while
+        // a mouse/touch press was in progress, making Return to Class Matchups
+        // appear dead. Network/state events still call render() when real content changes.
+        this.ticker = window.setInterval(() => this.updateCountdown(), 250);
         this.cleanup.push(network.on('roomState', (room) => {
             if (room.status !== 'lobby')
                 return;
@@ -54,6 +58,14 @@ export class MatchResultScene extends BaseBowlingScene {
             window.clearInterval(this.ticker);
             this.cleanup.splice(0).forEach((fn) => fn());
         });
+    }
+    updateCountdown() {
+        if (!this.ui || !appState.roundResult)
+            return;
+        const countdown = this.ui.querySelector('.result-countdown strong');
+        if (!countdown)
+            return;
+        countdown.textContent = String(Math.max(0, Math.ceil((appState.roundResult.phaseEndsAt - Date.now()) / 1000)));
     }
     render(state, roundResult) {
         if (!this.ui)

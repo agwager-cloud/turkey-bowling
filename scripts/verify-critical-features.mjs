@@ -4,6 +4,11 @@ import { resolve } from 'node:path';
 const root = resolve(import.meta.dirname, '..');
 const read = (rel) => readFileSync(resolve(root, rel), 'utf8');
 const checks = [
+  ['result countdown preserves navigation DOM', 'client/src/scenes/MatchResultScene.ts', /setInterval\(\(\) => this\.updateCountdown\(\), 250\)/],
+  ['return to class matchups navigation', 'client/src/scenes/MatchResultScene.ts', /result-class-matchups.*MatchupScene/s],
+  ['1000px host controls stay one row', 'client/src/style.css', /v0\.7\.28[\s\S]*match-head-actions[\s\S]*flex-wrap:\s*nowrap/],
+  ['landscape maths keypad uses six columns', 'client/src/style.css', /math-keypad\s*\{[\s\S]*grid-template-columns:\s*repeat\(6,/],
+  ['landscape maths card avoids scrollbar at standard height', 'client/src/style.css', /math-card\s*\{[\s\S]*overflow:\s*hidden/],
   ['host OPT OUT button', 'client/src/scenes/MatchupScene.ts', /OPT OUT/],
   ['host participation network command', 'client/src/net/NetworkManager.ts', /setHostParticipation\(participating\).*set_host_participation/s],
   ['active-shot render protection', 'client/src/scenes/BowlingScene.ts', /localShotInFlight/],
@@ -38,4 +43,4 @@ if (failed) {
   console.error('\nCritical Turkey Bowling regression detected. Build stopped.');
   process.exit(1);
 }
-console.log('\nCritical v0.7.27 stability and physics features verified.');
+console.log('\nCritical v0.7.28 stability, navigation and layout features verified.');

@@ -1,14 +1,15 @@
-# Turkey Bowling v0.7.27
+# Turkey Bowling v0.7.28
 
-**Head-pin graze + skittle physics refinement built directly on the recovered/stable v0.7.26 client.**
+**1000×720 navigation and maths-layout polish built on the stable v0.7.27 physics/network baseline.**
 
-- Fixes the v0.7.26 binary head-pin behaviour: a clear miss keeps pin 1 standing, while a genuine edge clip now knocks it down.
-- Uses a stricter near-real head-pin contact radius so a ball that is visibly clear of pin 1 cannot magically score it.
-- Resolves real swept ball/pin contacts before the adjacent-gap fallback, so a visible graze can never be pre-emptively turned into a protected miss.
-- Uses the first swept time-of-impact normal instead of the closest-point normal; glancing hits now transfer meaningful forward/lateral energy instead of feeling dead.
-- Preserves more bowling-ball forward momentum through the pocket, preventing the ball from appearing to stop behind the head pin while back-row pins fall.
-- Strengthens deterministic lateral skittle/messenger carry for thin hits and horizontal fallen pins.
-- Retains the v0.7.26 rare 7-10 tuning and the recovered host OPT OUT, shot/match ID sync protection, spectator behaviour, gutter `awww` and spare audio.
+- Fixes the Match Result **RETURN TO CLASS MATCHUPS** button by stopping the 250 ms countdown timer from rebuilding the entire result DOM. The timer now updates only its number, so mouse/touch navigation cannot be replaced mid-press.
+- Keeps the host Class Matchups header controls on **one row** at the standard itch.io 1000×720 landscape embed size.
+- Keeps LEVEL, OPT OUT/IN, MANAGE PLAYERS, RETURN TO MY GAME and RETURN TO LOBBY visible without the previous two-row wrap.
+- Widens Level 2 Guided Scoring and Level 3 Independent Scoring overlays in landscape.
+- Changes the landscape maths keypad from 3×4 to **6×2**, retaining large touch targets while dramatically reducing overlay height.
+- Level 3 gets additional width for the 10-frame mini scorecard; standard 1000×720 landscape uses no internal maths-card scrollbar.
+- Narrow/portrait devices retain the familiar 3×4 keypad, and very short landscape displays retain scrolling as a safety fallback.
+- No bowling physics, multiplayer sync, host opt-out behaviour, spectator flow or audio logic changed in this release.
 
 # Turkey Bowling v0.7.24 — itch.io Packaging Reliability
 
