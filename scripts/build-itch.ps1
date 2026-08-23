@@ -13,7 +13,7 @@ if (-not (Test-Path (Join-Path $dist "index.html"))) {
 
 $releaseDir = Join-Path $root "releases"
 New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
-$zip = Join-Path $releaseDir "turkey-bowling-itch-v0.7.22.zip"
+$zip = Join-Path $releaseDir "turkey-bowling-itch-v0.7.23.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
 
 Compress-Archive -Path (Join-Path $dist "*") -DestinationPath $zip -CompressionLevel Optimal

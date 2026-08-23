@@ -1,6 +1,14 @@
-# Turkey Bowling v0.7.22 — Heavier Bowling Physics + Camera Framing
+# Turkey Bowling v0.7.23 — Solid Rack Collisions + Audio Recovery
 
 Multiplayer ten-pin bowling maths game built with Phaser/Vite on the client and Node.js/WebSockets on the server.
+
+## v0.7.23 collision + sound hotfix
+- Standing leave pins remain solid collision bodies instead of becoming ghost pins after rack-carry logic runs.
+- Added a wider standing-pin contact envelope so the ball cannot visually squeeze through adjacent pins while preserving the slimmer regulation pin artwork.
+- Added the zero-pin miss callback expected by the current BowlingScene audio/celebration flow.
+- Hardened HTML audio asset resolution for itch.io/local builds.
+- Audio now retries on every real user gesture if an embedded browser rejects the first playback attempt.
+- One-shot bowling sounds are no longer suppressed forever by a stale internal audio-unlock flag.
 
 ## v0.7.22 bowling feel update
 - Tilted the virtual lane camera upward so the taller regulation-proportion pins are fully visible.
@@ -72,4 +80,4 @@ cd C:\Projects\bowling
 npm run build:itch
 ```
 
-The finished file will be created at `releases\turkey-bowling-itch-v0.7.21.zip`, with `index.html` at the ZIP root.
+The finished file will be created at `releases\turkey-bowling-itch-v0.7.23.zip`, with `index.html` at the ZIP root.

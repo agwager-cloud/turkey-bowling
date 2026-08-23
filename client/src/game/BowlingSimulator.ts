@@ -10,6 +10,7 @@ export interface BowlingShotConfig {
   // pin physics. Functions are never sent over the network.
   onLoudPinImpact?: () => void;
   onRackCleared?: () => void;
+  onZeroPinMissAtDeck?: () => void;
 }
 
 export interface BowlingShotResult {
@@ -61,6 +62,12 @@ const BALL_RADIUS = 0.064;
 // domino-like rack reactions. This footprint is much closer to real geometry.
 const PIN_RADIUS = BALL_RADIUS * 0.555;
 const BALL_PIN_RADIUS = BALL_RADIUS + PIN_RADIUS;
+// The 2.5D top-down collision circle represents the pin's maximum belly and
+// vertical body envelope, not just its narrow base. Keeping this ball-contact
+// envelope slightly wider than the pin-to-pin footprint prevents a bowling ball
+// from visually squeezing through two adjacent standing pins.
+const STANDING_PIN_BALL_CONTACT_RADIUS = 0.048;
+const BALL_STANDING_PIN_RADIUS = BALL_RADIUS + STANDING_PIN_BALL_CONTACT_RADIUS;
 // Keep a very small visual-graze allowance on the 7/10 pins so an apparent
 // edge shave still registers without effectively widening the whole rack.
 const CORNER_PIN_GRAZE_MARGIN = 0.008;
@@ -129,6 +136,8 @@ export class BowlingSimulator {
   private loudPinImpactNotified = false;
   private rackClearedCallback?: () => void;
   private rackClearedNotified = false;
+  private zeroPinMissCallback?: () => void;
+  private zeroPinMissNotified = false;
 
   constructor(canvas: HTMLCanvasElement, standingPins: number[]) {
     this.canvas = canvas;
@@ -147,6 +156,7 @@ export class BowlingSimulator {
     this.shotResolver = undefined;
     this.loudPinImpactCallback = undefined;
     this.rackClearedCallback = undefined;
+    this.zeroPinMissCallback = undefined;
   }
 
   setStandingPins(standingPins: number[]): void {
@@ -245,6 +255,8 @@ export class BowlingSimulator {
     this.loudPinImpactNotified = false;
     this.rackClearedCallback = config.onRackCleared;
     this.rackClearedNotified = false;
+    this.zeroPinMissCallback = config.onZeroPinMissAtDeck;
+    this.zeroPinMissNotified = false;
 
     // The farther the release is from the green zone, the less faithfully the
     // ball follows the line the player set. Small misses are recoverable; large
@@ -386,6 +398,7 @@ export class BowlingSimulator {
     this.movePins(dt);
     this.maybeNotifyLoudPinImpact(ball);
     this.maybeNotifyRackCleared(ball);
+    this.maybeNotifyZeroPinMiss(ball);
   }
 
   private maybeNotifyLoudPinImpact(ball: SimBall): void {
@@ -409,10 +422,22 @@ export class BowlingSimulator {
     this.rackClearedCallback();
   }
 
+  private maybeNotifyZeroPinMiss(ball: SimBall): void {
+    if (this.zeroPinMissNotified || ball.gutter || !this.zeroPinMissCallback) return;
+    // Trigger once the ball has reached/passed the front of the rack and there
+    // are still zero committed pin falls. This keeps the reaction synced to the
+    // visible miss rather than waiting until the full shot settles.
+    if (ball.y < 0.96) return;
+    const knockedCount = this.pins.reduce((count, pin) => count + (this.initialStanding.has(pin.id) && pin.knocked ? 1 : 0), 0);
+    if (knockedCount !== 0) return;
+    this.zeroPinMissNotified = true;
+    this.zeroPinMissCallback();
+  }
+
   private collideBallWithPins(ball: SimBall, previousBallX: number, previousBallY: number): void {
     for (const pin of this.pins) {
       if (!this.initialStanding.has(pin.id)) continue;
-      if (this.rackCarryApplied && this.protectedLeavePins.has(pin.id)) continue;
+      const protectedStanding = this.rackCarryApplied && this.protectedLeavePins.has(pin.id) && !pin.knocked;
       if (pin.knocked && Math.hypot(pin.vx, pin.vy) < 0.005) continue;
 
       // Use the whole distance travelled during this fixed physics step instead
@@ -434,7 +459,8 @@ export class BowlingSimulator {
       let dy = pin.y - closestY;
       let distance = Math.hypot(dx, dy);
       const cornerPin = pin.id === 6 || pin.id === 9;
-      const effectiveRadius = BALL_PIN_RADIUS + (cornerPin ? CORNER_PIN_GRAZE_MARGIN : 0);
+      const baseContactRadius = pin.knocked ? BALL_PIN_RADIUS : BALL_STANDING_PIN_RADIUS;
+      const effectiveRadius = baseContactRadius + (cornerPin ? CORNER_PIN_GRAZE_MARGIN : 0);
       if (distance >= effectiveRadius) continue;
 
       // An exact centre-line collision has no useful normal. Fall back to the
@@ -472,6 +498,24 @@ export class BowlingSimulator {
       // in one substep. For swept-only contacts the overlap can be tiny, which
       // is fine—the important part is registering the visible graze.
       const overlap = Math.max(0, effectiveRadius - distance);
+      const tx = -ny;
+      const ty = nx;
+      const tangentialSpeed = relativeVx * tx + relativeVy * ty;
+      const tangentialTransfer = tangentialSpeed * 0.10 * grazeStrength;
+      const ballTangentialReaction = tangentialTransfer * (PIN_MASS_KG / BALL_MASS_KG);
+
+      if (protectedStanding) {
+        // A deliberately protected leave must remain a SOLID object. Earlier
+        // versions skipped it completely, creating a ghost pin that the ball
+        // could pass through. Keep the pin upright, but separate and deflect the
+        // ball as if it met a stable standing body.
+        ball.x -= nx * overlap * 0.96;
+        ball.y -= ny * overlap * 0.96;
+        ball.vx -= nx * ballNormalDelta * 0.92 + tx * ballTangentialReaction * 0.55;
+        ball.vy = Math.max(0.18, ball.vy - ny * ballNormalDelta * 0.92 - ty * ballTangentialReaction * 0.55);
+        continue;
+      }
+
       pin.x += nx * overlap * 0.7;
       pin.y += ny * overlap * 0.7;
       ball.x -= nx * overlap * 0.3;
@@ -484,13 +528,8 @@ export class BowlingSimulator {
 
       // A small tangential transfer gives glancing hits realistic side movement
       // and torque without flinging pins sideways as if they were weightless.
-      const tx = -ny;
-      const ty = nx;
-      const tangentialSpeed = relativeVx * tx + relativeVy * ty;
-      const tangentialTransfer = tangentialSpeed * 0.10 * grazeStrength;
       pin.vx += tx * tangentialTransfer;
       pin.vy += ty * tangentialTransfer;
-      const ballTangentialReaction = tangentialTransfer * (PIN_MASS_KG / BALL_MASS_KG);
       ball.vx -= tx * ballTangentialReaction;
       ball.vy = Math.max(0.24, ball.vy - ty * ballTangentialReaction);
 
@@ -866,6 +905,7 @@ export class BowlingSimulator {
     this.shotResolver = undefined;
     this.loudPinImpactCallback = undefined;
     this.rackClearedCallback = undefined;
+    this.zeroPinMissCallback = undefined;
     this.draw();
     resolve?.(result);
   }

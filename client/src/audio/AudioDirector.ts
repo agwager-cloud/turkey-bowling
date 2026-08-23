@@ -5,7 +5,10 @@ interface LoopTrack {
   volume: number;
 }
 
-const asset = (name: string): string => new URL(`./audio/${name}`, window.location.href).href;
+// Resolve from the folder containing index.html rather than from an individual
+// module URL. This is robust in itch.io's iframe, local Vite and direct builds.
+const assetBase = (): URL => new URL('./', document.baseURI || window.location.href);
+const asset = (name: string): string => new URL(`audio/${name}`, assetBase()).href;
 
 class AudioDirector {
   private readonly loops: Record<LoopKey, LoopTrack>;
@@ -21,9 +24,18 @@ class AudioDirector {
       ambience: this.makeLoop(asset('freesound_community-bowling-alley-ambience-56880.mp3'), 0.44)
     };
 
-    // Browsers require a real user gesture before starting audio. The first tap,
-    // click or drag anywhere in the game unlocks the requested scene mix.
-    window.addEventListener('pointerdown', () => this.unlock(), { capture: true, passive: true });
+    // Some embedded browsers reject the very first media play attempt even
+    // though it happened during a pointer gesture. Do not permanently mark the
+    // audio system as "already unlocked" and then stop trying. Every genuine
+    // user gesture is allowed to retry any requested loop that is still paused.
+    const resumeFromGesture = () => {
+      this.unlocked = true;
+      this.syncSceneMix();
+    };
+    window.addEventListener('pointerdown', resumeFromGesture, { capture: true, passive: true });
+    window.addEventListener('click', resumeFromGesture, { capture: true, passive: true });
+    window.addEventListener('keydown', resumeFromGesture, { capture: true });
+
     window.addEventListener('turkey-bowling-sound-change', (event) => {
       this.setMuted((event as CustomEvent<boolean>).detail);
     });
@@ -42,7 +54,13 @@ class AudioDirector {
     this.muted = muted;
     Object.values(this.loops).forEach(({ audio }) => { audio.muted = muted; });
     this.activeSfx.forEach((audio) => { audio.muted = muted; });
-    if (!muted) this.syncSceneMix();
+    if (muted) this.pauseAllLoops();
+    else {
+      // The sound toggle itself is a user gesture, so a later pointer/click event
+      // will retry playback immediately even if an embedded browser denied an
+      // earlier attempt.
+      this.syncSceneMix();
+    }
   }
 
   /** Loud bowling-pin crash. Resolves when the clip has finished. */
@@ -74,12 +92,6 @@ class AudioDirector {
     return { audio, volume };
   }
 
-  private unlock(): void {
-    if (this.unlocked) return;
-    this.unlocked = true;
-    this.syncSceneMix();
-  }
-
   private wantedLoops(): Set<LoopKey> {
     switch (this.currentScene) {
       case 'StartScene':
@@ -97,18 +109,21 @@ class AudioDirector {
   }
 
   private syncSceneMix(): void {
-    if (!this.unlocked || document.hidden) return;
+    if (!this.unlocked || this.muted || document.hidden) return;
     const wanted = this.wantedLoops();
     (Object.keys(this.loops) as LoopKey[]).forEach((key) => {
       const track = this.loops[key];
       track.audio.volume = track.volume;
-      track.audio.muted = this.muted;
+      track.audio.muted = false;
       if (wanted.has(key)) {
-        if (track.audio.paused) void track.audio.play().catch(() => undefined);
+        if (track.audio.paused) {
+          // If the embed/browser declines this attempt, leave it paused. The next
+          // user gesture will call syncSceneMix again and retry rather than
+          // leaving the game permanently silent.
+          void track.audio.play().catch(() => undefined);
+        }
       } else if (!track.audio.paused) {
         track.audio.pause();
-        // Returning to a music family later begins that track from the start,
-        // while moving Matchups -> Bowling -> Results keeps arcade music continuous.
         track.audio.currentTime = 0;
       }
     });
@@ -119,12 +134,16 @@ class AudioDirector {
   }
 
   private playOneShot(src: string, volume: number, waitForEnd: boolean): Promise<void> {
-    if (this.muted || !this.unlocked) return Promise.resolve();
+    if (this.muted) return Promise.resolve();
 
+    // Do not gate SFX on our own `unlocked` boolean. Gameplay SFX occur after
+    // the player has interacted with the page, and the browser is the authority
+    // on whether playback is permitted. The old boolean could suppress every
+    // sound forever after one failed unlock attempt.
     const audio = new Audio(src);
     audio.preload = 'auto';
     audio.volume = volume;
-    audio.muted = this.muted;
+    audio.muted = false;
     this.activeSfx.add(audio);
 
     const cleanup = () => {
@@ -151,7 +170,6 @@ class AudioDirector {
       audio.onended = finish;
       audio.onerror = finish;
       void audio.play().catch(finish);
-      // Safety guard if a device/browser fails to emit ended/error.
       window.setTimeout(finish, 2400);
     });
   }
