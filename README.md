@@ -1,4 +1,4 @@
-# Turkey Bowling v0.7.28
+# Turkey Bowling v0.7.29
 
 **1000×720 navigation and maths-layout polish built on the stable v0.7.27 physics/network baseline.**
 

@@ -1154,7 +1154,7 @@ function renderMathOverlay(level, game, frameIndex) {
           ${renderMathScorecard(game, frameIndex)}`}
       <div id="math-answer" class="math-answer" aria-live="polite">—</div>
       <div class="math-keypad" aria-label="Score keypad">
-        ${[1, 2, 3, 4, 5, 6, 7, 8, 9].map((digit) => `<button type="button" data-math-digit="${digit}">${digit}</button>`).join('')}
+        ${[7, 8, 9, 4, 5, 6, 1, 2, 3].map((digit) => `<button type="button" data-math-digit="${digit}">${digit}</button>`).join('')}
         <button id="math-clear" class="math-key-secondary" type="button">CLEAR</button>
         <button type="button" data-math-digit="0">0</button>
         <button id="math-backspace" class="math-key-secondary" type="button" aria-label="Backspace">⌫</button>

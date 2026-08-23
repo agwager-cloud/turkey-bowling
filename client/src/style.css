@@ -2721,7 +2721,7 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none !important;
     font-size: 29px;
   }
   .math-keypad {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 6px;
   }
   .math-keypad button {
@@ -2753,5 +2753,146 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none !important;
 @media (orientation: landscape) and (max-height: 600px) {
   .math-card {
     overflow: auto;
+  }
+}
+
+
+/* ===== v0.7.29 restore true 3 x 4 calculator numpad without landscape scrolling ===== */
+.math-keypad {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (min-width: 700px) and (orientation: landscape) {
+  .math-overlay {
+    padding: 8px 12px;
+  }
+  .math-card {
+    width: min(760px, calc(100vw - 28px));
+    max-height: calc(100vh - 16px);
+    overflow: hidden;
+    padding: 10px 16px 9px;
+  }
+  .math-card-independent {
+    width: min(880px, calc(100vw - 28px));
+  }
+  .math-kicker {
+    font-size: 8px;
+    line-height: 1;
+  }
+  .math-card h2 {
+    margin: 2px 0 5px;
+    font-size: 24px;
+    line-height: 1;
+  }
+  .math-timer-panel {
+    margin-bottom: 5px;
+    padding: 5px 9px 4px;
+  }
+  .math-timer-row {
+    min-height: 20px;
+  }
+  .math-timer-row strong {
+    font-size: 18px;
+  }
+  .math-timer-track {
+    height: 6px;
+    margin-top: 2px;
+  }
+  .math-timer-panel small {
+    margin-top: 2px;
+    font-size: 7px;
+    line-height: 1.05;
+  }
+  .math-teach-box,
+  .math-independent-copy {
+    padding: 5px 9px;
+    font-size: 10px;
+    line-height: 1.18;
+  }
+  .math-score-facts {
+    gap: 7px;
+    margin-top: 5px;
+  }
+  .math-score-facts span {
+    gap: 0;
+    padding: 4px 6px;
+  }
+  .math-score-facts small {
+    font-size: 7px;
+  }
+  .math-score-facts strong {
+    font-size: 18px;
+    line-height: 1.05;
+  }
+  .math-equation {
+    gap: 7px;
+    margin-top: 4px;
+    font-size: 23px;
+    line-height: 1;
+  }
+  .math-equation strong {
+    min-width: 38px;
+    min-height: 32px;
+  }
+  .math-scorecard-shell {
+    margin-top: 5px;
+    padding: 5px;
+  }
+  .math-scorecard-title {
+    margin-bottom: 4px;
+    font-size: 8px;
+    line-height: 1;
+  }
+  .math-mini-frame {
+    grid-template-rows: 13px 18px 16px;
+  }
+  .math-mini-frame > span { font-size: 8px; }
+  .math-mini-frame > b { font-size: 9px; }
+  .math-mini-frame > em { font-size: 9px; }
+  .math-answer {
+    min-height: 40px;
+    margin: 5px auto;
+    font-size: 26px;
+  }
+  .math-keypad {
+    width: min(440px, 100%);
+    margin: 0 auto;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 5px;
+  }
+  .math-keypad button {
+    min-height: 40px;
+    border-radius: 9px;
+    font-size: 18px;
+    line-height: 1;
+  }
+  .math-keypad .math-key-secondary {
+    font-size: 10px;
+  }
+  .math-submit {
+    display: block;
+    width: min(440px, 100%);
+    min-height: 40px;
+    margin: 6px auto 0;
+    font-size: 13px;
+  }
+  .math-feedback {
+    min-height: 12px;
+    margin-top: 2px;
+    font-size: 9px;
+    line-height: 1.05;
+  }
+  .math-no-keyboard {
+    margin-top: 0;
+    font-size: 7px;
+    line-height: 1;
+  }
+}
+
+/* At the standard itch.io 1000 x 720 viewport, both score checks must fit as a single card. */
+@media (min-width: 900px) and (min-height: 650px) and (orientation: landscape) {
+  .math-card,
+  .math-card-independent {
+    overflow: hidden;
   }
 }
