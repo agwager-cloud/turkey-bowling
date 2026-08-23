@@ -3,6 +3,9 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
+Write-Host "Verifying critical Turkey Bowling features..." -ForegroundColor Cyan
+npm run verify:critical
+
 Write-Host "Building Turkey Bowling production client..." -ForegroundColor Cyan
 npm run build:client
 
@@ -38,7 +41,7 @@ if ($refs.Count -eq 0) {
 
 $releaseDir = Join-Path $root "releases"
 New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
-$zip = Join-Path $releaseDir "turkey-bowling-itch-v0.7.24.zip"
+$zip = Join-Path $releaseDir "turkey-bowling-itch-v0.7.25.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
 
 # Put the *contents* of dist at ZIP root, never the dist folder itself.

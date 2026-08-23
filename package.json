@@ -1,6 +1,6 @@
 {
   "name": "turkey-bowling",
-  "version": "0.7.24",
+  "version": "0.7.25",
   "private": true,
   "workspaces": [
     "client",
@@ -14,6 +14,7 @@
     "typecheck": "npm run typecheck --workspace client && npm run typecheck --workspace server",
     "build:client": "npm run build --workspace client",
     "build:server": "npm run build --workspace server",
-    "build:itch": "powershell -ExecutionPolicy Bypass -File scripts/build-itch.ps1"
+    "build:itch": "powershell -ExecutionPolicy Bypass -File scripts/build-itch.ps1",
+    "verify:critical": "node scripts/verify-critical-features.mjs"
   }
 }

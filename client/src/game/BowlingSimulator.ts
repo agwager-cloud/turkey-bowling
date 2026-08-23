@@ -73,6 +73,25 @@ const BALL_STANDING_PIN_RADIUS = BALL_RADIUS + STANDING_PIN_BALL_CONTACT_RADIUS;
 const CORNER_PIN_GRAZE_MARGIN = 0.008;
 const PIN_PIN_RADIUS = PIN_RADIUS * 2;
 
+// The rack artwork uses perspective spacing that is wider than real-world pin
+// spacing relative to the ball. A real bowling ball cannot pass cleanly through
+// the gap between two adjacent standing pins. Bridge those exact gap corridors
+// with a paired contact so the ball catches both inside faces instead of
+// magically threading between them. This is deterministic and applies to every
+// adjacent row pair, including exposed spare leaves.
+const ADJACENT_GAP_HALF_WIDTH = 0.066;
+const ADJACENT_GAP_Y_TOLERANCE = 0.080;
+const ADJACENT_PIN_GAPS: ReadonlyArray<readonly [number, number, number, number]> = [
+  [1, 2, 0.00, 0.850],
+  [3, 4, -0.16, 0.886], [4, 5, 0.16, 0.886],
+  [6, 7, -0.32, 0.922], [7, 8, 0.00, 0.922], [8, 9, 0.32, 0.922]
+];
+
+// Once the ball reaches this point it has visibly cleared the rack. If no pin
+// has fallen, play the zero-pin reaction. This deliberately also applies to a
+// gutter ball, matching the known-good v0.7.20 behaviour.
+const ZERO_PIN_REACTION_Y = 1.045;
+
 // Real-world mass ratio: a typical 15 lb bowling ball is ~6.8 kg and a
 // regulation pin is ~1.59 kg. The simulator previously used hand-tuned velocity
 // additions that made the rack feel unusually light. Explicit masses plus low
@@ -423,11 +442,8 @@ export class BowlingSimulator {
   }
 
   private maybeNotifyZeroPinMiss(ball: SimBall): void {
-    if (this.zeroPinMissNotified || ball.gutter || !this.zeroPinMissCallback) return;
-    // Trigger once the ball has reached/passed the front of the rack and there
-    // are still zero committed pin falls. This keeps the reaction synced to the
-    // visible miss rather than waiting until the full shot settles.
-    if (ball.y < 0.96) return;
+    if (this.zeroPinMissNotified || !this.zeroPinMissCallback || this.initialStanding.size === 0) return;
+    if (ball.y < ZERO_PIN_REACTION_Y) return;
     const knockedCount = this.pins.reduce((count, pin) => count + (this.initialStanding.has(pin.id) && pin.knocked ? 1 : 0), 0);
     if (knockedCount !== 0) return;
     this.zeroPinMissNotified = true;
@@ -435,7 +451,9 @@ export class BowlingSimulator {
   }
 
   private collideBallWithPins(ball: SimBall, previousBallX: number, previousBallY: number): void {
+    const pairedGapPins = this.applyAdjacentGapContact(ball, previousBallX, previousBallY);
     for (const pin of this.pins) {
+      if (pairedGapPins.has(pin.id)) continue;
       if (!this.initialStanding.has(pin.id)) continue;
       const protectedStanding = this.rackCarryApplied && this.protectedLeavePins.has(pin.id) && !pin.knocked;
       if (pin.knocked && Math.hypot(pin.vx, pin.vy) < 0.005) continue;
@@ -553,6 +571,52 @@ export class BowlingSimulator {
 
       // Ball velocity has already been updated by the mass-based impulse above.
     }
+  }
+
+  private applyAdjacentGapContact(ball: SimBall, previousBallX: number, previousBallY: number): Set<number> {
+    const contacted = new Set<number>();
+    if (ball.gutter || ball.vy <= 0) return contacted;
+
+    for (const [leftId, rightId, midpoint, rowY] of ADJACENT_PIN_GAPS) {
+      const leftPin = this.pins[leftId];
+      const rightPin = this.pins[rightId];
+      if (!leftPin || !rightPin) continue;
+      if (!this.initialStanding.has(leftId) || !this.initialStanding.has(rightId)) continue;
+      if (leftPin.knocked || rightPin.knocked) continue;
+
+      const zoneStart = rowY - ADJACENT_GAP_Y_TOLERANCE;
+      if (ball.y < zoneStart || previousBallY > rowY + 0.025) continue;
+
+      const timeToRow = (rowY - ball.y) / Math.max(0.15, ball.vy);
+      const projectedX = ball.x + ball.vx * timeToRow;
+      if (Math.abs(projectedX - midpoint) > ADJACENT_GAP_HALF_WIDTH) continue;
+
+      // The ball is physically wider than the visible inside-face gap. Resolve
+      // one paired impact: both pins receive outward/forward momentum while the
+      // ball gives up energy and continues through the deck. Protected scoring
+      // leaves remain upright, but still behave as solid bodies and deflect the ball.
+      const forward = Math.max(0.17, ball.vy * 0.27);
+      const sharedLateral = ball.vx * 0.12;
+      const spread = 0.115 + Math.min(0.035, Math.abs(ball.vx) * 0.04);
+
+      const leftProtected = this.rackCarryApplied && this.protectedLeavePins.has(leftId);
+      const rightProtected = this.rackCarryApplied && this.protectedLeavePins.has(rightId);
+      if (!leftProtected) this.kickPin(leftId, sharedLateral - spread, forward, -4.2);
+      if (!rightProtected) this.kickPin(rightId, sharedLateral + spread, forward, 4.2);
+
+      // Even a protected leave is not a ghost. A paired hit always costs the ball
+      // momentum; if one side stays upright, add a small deflection away from it.
+      ball.vy = Math.max(0.22, ball.vy * 0.86);
+      ball.vx *= 0.82;
+      if (leftProtected !== rightProtected) {
+        ball.vx += leftProtected ? 0.055 : -0.055;
+      }
+
+      contacted.add(leftId);
+      contacted.add(rightId);
+      break;
+    }
+    return contacted;
   }
 
   private collidePins(): void {

@@ -1,3 +1,7 @@
+# Turkey Bowling v0.7.25
+
+**Recovery release:** restored the known-good v0.7.20 host opt-out, shot-sync stability, gutter/spare SFX, and live-spectator client behaviour, then retained the improved pin artwork/camera/heavier collision feel. Adjacent-pin gap bridging now prevents the ball from threading physically impossible gaps.
+
 # Turkey Bowling v0.7.24 — itch.io Packaging Reliability
 
 Multiplayer ten-pin bowling maths game built with Phaser/Vite on the client and Node.js/WebSockets on the server.

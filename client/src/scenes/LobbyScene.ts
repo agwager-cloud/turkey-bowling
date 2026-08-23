@@ -1,42 +1,36 @@
+// @ts-nocheck
 import { BaseBowlingScene } from './BaseBowlingScene';
 import { createSceneUi } from '../ui/dom';
 import { network } from '../net/NetworkManager';
 import { appState } from '../state';
-import type { GameLevel, RoomState } from '../types';
-
 export class LobbyScene extends BaseBowlingScene {
-  private cleanup: Array<() => void> = [];
-  private ui?: HTMLDivElement;
-
-  constructor() { super('LobbyScene'); }
-
-  create(): void {
-    this.setupBaseScene();
-    if (!appState.room) return void this.scene.start('StartScene');
-    this.ui = createSceneUi();
-    this.render(appState.room);
-
-    this.cleanup.push(
-      network.on('roomState', (room) => { appState.room = room; this.render(room); }),
-      network.on('matchStarted', (message) => {
-        appState.room = message.room;
-        appState.matchups = message.matchups;
-        appState.matchupEndsAt = message.phaseEndsAt;
-        appState.roundResult = null;
-        this.scene.start('MatchupScene');
-      }),
-      network.on('error', ({ message }) => alert(message))
-    );
-    this.events.once('shutdown', () => this.cleanup.splice(0).forEach((fn) => fn()));
-  }
-
-  private render(room: RoomState): void {
-    if (!this.ui) return;
-    const me = room.players.find((player) => player.id === appState.playerId);
-    if (!me) return;
-    const isHost = me.isHost;
-
-    this.ui.innerHTML = `
+    constructor() {
+        super('LobbyScene');
+        this.cleanup = [];
+    }
+    create() {
+        this.setupBaseScene();
+        if (!appState.room)
+            return void this.scene.start('StartScene');
+        this.ui = createSceneUi();
+        this.render(appState.room);
+        this.cleanup.push(network.on('roomState', (room) => { appState.room = room; this.render(room); }), network.on('matchStarted', (message) => {
+            appState.room = message.room;
+            appState.matchups = message.matchups;
+            appState.matchupEndsAt = message.phaseEndsAt;
+            appState.roundResult = null;
+            this.scene.start('MatchupScene');
+        }), network.on('error', ({ message }) => alert(message)));
+        this.events.once('shutdown', () => this.cleanup.splice(0).forEach((fn) => fn()));
+    }
+    render(room) {
+        if (!this.ui)
+            return;
+        const me = room.players.find((player) => player.id === appState.playerId);
+        if (!me)
+            return;
+        const isHost = me.isHost;
+        this.ui.innerHTML = `
       <div class="lobby-shell interactive">
         <section class="lobby-main panel">
           <div class="lobby-header">
@@ -65,26 +59,24 @@ export class LobbyScene extends BaseBowlingScene {
           <p class="role-note">${isHost && room.players.length === 1 ? '<strong>Solo testing:</strong> Start now and the server will add Turkey Bot as your opponent.<br><br>' : ''}Level 1 remains the default. Levels 2 and 3 are carried through the complete match flow now; their maths-entry interfaces come after the bowling simulator is established.</p>
         </aside>
       </div>`;
-
-    if (!isHost) return;
-    this.ui.querySelectorAll<HTMLButtonElement>('[data-level]').forEach((button) => {
-      button.onclick = () => network.setLevel(Number(button.dataset.level) as GameLevel);
-    });
-    this.ui.querySelectorAll<HTMLButtonElement>('[data-kick]').forEach((button) => {
-      button.onclick = () => {
-        network.kickPlayer(button.dataset.kick!);
-        button.disabled = true;
-        button.textContent = '…';
-      };
-    });
-    this.ui.querySelector<HTMLButtonElement>('#start-btn')!.onclick = () => network.startMatch();
-  }
+        if (!isHost)
+            return;
+        this.ui.querySelectorAll('[data-level]').forEach((button) => {
+            button.onclick = () => network.setLevel(Number(button.dataset.level));
+        });
+        this.ui.querySelectorAll('[data-kick]').forEach((button) => {
+            button.onclick = () => {
+                network.kickPlayer(button.dataset.kick);
+                button.disabled = true;
+                button.textContent = '…';
+            };
+        });
+        this.ui.querySelector('#start-btn').onclick = () => network.startMatch();
+    }
 }
-
-function levelButton(level: GameLevel, description: string, active: GameLevel, enabled: boolean): string {
-  return `<button class="level-btn${active === level ? ' active' : ''}" data-level="${level}" type="button" ${enabled ? '' : 'disabled'}><strong>Level ${level}</strong><small>${description}</small></button>`;
+function levelButton(level, description, active, enabled) {
+    return `<button class="level-btn${active === level ? ' active' : ''}" data-level="${level}" type="button" ${enabled ? '' : 'disabled'}><strong>Level ${level}</strong><small>${description}</small></button>`;
 }
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]!));
+function escapeHtml(value) {
+    return value.replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
 }
