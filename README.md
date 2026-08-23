@@ -1,4 +1,4 @@
-# Turkey Bowling v0.7.23 — Solid Rack Collisions + Audio Recovery
+# Turkey Bowling v0.7.24 — itch.io Packaging Reliability
 
 Multiplayer ten-pin bowling maths game built with Phaser/Vite on the client and Node.js/WebSockets on the server.
 
@@ -9,6 +9,13 @@ Multiplayer ten-pin bowling maths game built with Phaser/Vite on the client and 
 - Hardened HTML audio asset resolution for itch.io/local builds.
 - Audio now retries on every real user gesture if an embedded browser rejects the first playback attempt.
 - One-shot bowling sounds are no longer suppressed forever by a stale internal audio-unlock flag.
+
+
+## v0.7.24 deployment reliability update
+- Keeps Vite production asset URLs explicitly relative for itch.io HTML5 iframe hosting.
+- The itch build now verifies every generated JS/CSS asset referenced by `index.html` exists on disk and inside the final ZIP.
+- The build fails instead of creating a broken upload if a referenced bundle is missing.
+- Server package version synced to v0.7.24 so this commit intentionally triggers one Render deployment despite Render's `server` root-directory filter.
 
 ## v0.7.22 bowling feel update
 - Tilted the virtual lane camera upward so the taller regulation-proportion pins are fully visible.
@@ -80,4 +87,4 @@ cd C:\Projects\bowling
 npm run build:itch
 ```
 
-The finished file will be created at `releases\turkey-bowling-itch-v0.7.23.zip`, with `index.html` at the ZIP root.
+The finished file will be created at `releases\turkey-bowling-itch-v0.7.24.zip`, with `index.html` at the ZIP root.
