@@ -10,6 +10,8 @@ export class MatchupScene extends BaseBowlingScene {
     laneScrollLeft = 0;
     laneAnchorMatchId = null;
     laneDefaultApplied = false;
+    laneScrollInitialized = false;
+    laneRenderGeneration = 0;
     laneInteractionUntil = 0;
     deferredRenderTimer = 0;
     leaderboardScrollTop = 0;
@@ -21,6 +23,8 @@ export class MatchupScene extends BaseBowlingScene {
         this.laneScrollLeft = 0;
         this.laneAnchorMatchId = null;
         this.laneDefaultApplied = false;
+        this.laneScrollInitialized = false;
+        this.laneRenderGeneration = 0;
         this.laneInteractionUntil = 0;
         this.participationBusy = false;
         window.clearTimeout(this.deferredRenderTimer);
@@ -119,7 +123,10 @@ export class MatchupScene extends BaseBowlingScene {
         const leaderboard = sortLeaderboard(room);
         const liveCount = liveBowling ? (appState.tournament?.matches.filter((match) => !match.complete && Boolean(match.playerB)).length ?? 0) : 0;
         const previousTrack = this.ui.querySelector('#lane-track');
-        if (previousTrack)
+        // Do not preserve scrollLeft until the first real lane layout has been
+        // positioned. A room-state render can otherwise capture the browser's
+        // temporary scrollLeft=0 before the Championship focus runs.
+        if (previousTrack && this.laneScrollInitialized)
             this.captureLanePosition(previousTrack);
         const previousLeaderboard = this.ui.querySelector('#leaderboard-list');
         if (previousLeaderboard)
@@ -213,6 +220,12 @@ export class MatchupScene extends BaseBowlingScene {
                     return;
             }
             this.participationBusy = true;
+            // Host participation changes rebuild/reassign lanes. Treat the next
+            // overview as a fresh host view so it opens on Championship again.
+            this.laneScrollLeft = 0;
+            this.laneAnchorMatchId = null;
+            this.laneDefaultApplied = false;
+            this.laneScrollInitialized = false;
             const button = event.currentTarget;
             button.disabled = true;
             button.textContent = 'UPDATING…';
@@ -270,6 +283,8 @@ export class MatchupScene extends BaseBowlingScene {
         this.render();
     }
     captureLanePosition(track) {
+        if (!this.laneScrollInitialized)
+            return;
         this.laneScrollLeft = track.scrollLeft;
         const cards = Array.from(track.querySelectorAll('.lane-card'));
         if (!cards.length)
@@ -289,7 +304,11 @@ export class MatchupScene extends BaseBowlingScene {
         const next = this.ui.querySelector('#lane-next');
         if (!track || !previous || !next)
             return;
+        const renderGeneration = ++this.laneRenderGeneration;
+        const isCurrentTrack = () => Boolean(track.isConnected && this.ui?.querySelector('#lane-track') === track && renderGeneration === this.laneRenderGeneration);
         const updateButtons = () => {
+            if (!isCurrentTrack())
+                return;
             const maxScroll = Math.max(0, track.scrollWidth - track.clientWidth);
             previous.disabled = maxScroll < 2 || track.scrollLeft <= 2;
             next.disabled = maxScroll < 2 || track.scrollLeft >= maxScroll - 2;
@@ -328,19 +347,26 @@ export class MatchupScene extends BaseBowlingScene {
         track.addEventListener('touchstart', markInteraction, { passive: true });
         track.addEventListener('wheel', markInteraction, { passive: true });
         track.addEventListener('scroll', () => {
+            if (!isCurrentTrack() || !this.laneScrollInitialized)
+                return;
             this.laneInteractionUntil = Math.max(this.laneInteractionUntil, performance.now() + 220);
             this.captureLanePosition(track);
             updateButtons();
         }, { passive: true });
-        requestAnimationFrame(() => {
+        // Two animation frames allow the horizontal layout to settle. More
+        // importantly, stale callbacks from a DOM tree replaced by a newer
+        // room-state render are ignored instead of overwriting the fresh view.
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            if (!isCurrentTrack())
+                return;
             const maxScroll = Math.max(0, track.scrollWidth - track.clientWidth);
             const anchored = this.laneAnchorMatchId
                 ? track.querySelector(`[data-match-id="${this.laneAnchorMatchId}"]`)
                 : null;
-            if (anchored) {
+            if (anchored && this.laneScrollInitialized) {
                 centreCard(anchored);
             }
-            else if (!this.laneDefaultApplied) {
+            else if (!this.laneDefaultApplied || !this.laneScrollInitialized) {
                 // Host view deliberately opens on the right-most Championship Lane.
                 if (isHost)
                     track.scrollLeft = maxScroll;
@@ -353,6 +379,7 @@ export class MatchupScene extends BaseBowlingScene {
                         track.scrollLeft = Math.max(0, Math.min(maxScroll, this.laneScrollLeft));
                 }
                 this.laneDefaultApplied = true;
+                this.laneScrollInitialized = true;
                 this.captureLanePosition(track);
             }
             else {
@@ -360,7 +387,7 @@ export class MatchupScene extends BaseBowlingScene {
                 this.captureLanePosition(track);
             }
             updateButtons();
-        });
+        }));
     }
     setupLeaderboardNavigation() {
         if (!this.ui)

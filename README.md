@@ -1,4 +1,14 @@
-# Turkey Bowling v0.7.29
+# Turkey Bowling v0.7.30
+
+**Championship-lane host-view stability fix built on the v0.7.29 gameplay/UI baseline.**
+
+- Fixes the host Class Matchups carousel so the first overview reliably opens on the far-right Championship Lane even when rapid room-state updates arrive during layout.
+- Ignores stale carousel callbacks from superseded renders and does not preserve `scrollLeft = 0` before the first real layout completes.
+- After OPT OUT / OPT IN, the next host overview is treated as fresh and opens on Championship again.
+- Player identity/name logic was audited and intentionally left unchanged because reconnects preserve the same player ID and name correctly.
+- No server, bowling physics, scoring, matchmaking, spectator, maths or mini-game logic changed.
+
+## Previous v0.7.29 changes
 
 **1000×720 navigation and maths-layout polish built on the stable v0.7.27 physics/network baseline.**
 

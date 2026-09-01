@@ -1,0 +1,46 @@
+Turkey Bowling v0.7.30 validation
+=================================
+
+AUDIT RESULT
+- CONFIRMED: v0.7.29 contained the same initial Championship-carousel render race seen in Dodeca-Gems/Minute to Win It.
+- NOT CONFIRMED: the Dodeca-style active-player name-loss bug is not present in Turkey Bowling's normal reconnect path.
+
+WHY THE CHAMPIONSHIP BUG COULD HAPPEN
+- MatchupScene scheduled its initial right-most Championship scroll in requestAnimationFrame.
+- A rapid room-state render could occur first.
+- render() unconditionally captured the old lane track while it was still at temporary scrollLeft=0.
+- The earlier/stale animation-frame callback could then mark the carousel initialized and the newer render would preserve the left-most position.
+
+FIX
+- Do not preserve lane scroll position until the first real layout has been initialized.
+- Give each lane DOM render a generation token and ignore stale callbacks from replaced DOM trees.
+- Use two animation frames before initial positioning so horizontal layout dimensions are settled.
+- Host initial overview opens at the far-right Championship Lane.
+- Host OPT OUT / OPT IN resets the next host overview to Championship.
+- Once initialized, normal host/student manual scrolling continues to be preserved.
+
+PLAYER NAME AUDIT — NO CHANGE REQUIRED
+- Reconnect uses normalized name + deviceId to find the existing player object.
+- reconnectPlayer() keeps the same player.id and reattaches the socket.
+- Therefore active matchup playerA/playerB resolution continues to find the same name during the reconnect grace period.
+- Late joins and Turkey Bot replacements create fresh matches with current Player objects.
+- A removed player's identity may intentionally become Disconnected after removal/forfeit; that is not the reported 'active player keeps winning but name disappears' failure mode.
+- No server/player-name schema change was made.
+
+REGRESSION CHECKS
+- All existing scripts/verify-critical-features.mjs checks PASS.
+- Added and PASS: Championship initial layout guard.
+- Added and PASS: stale matchup carousel callback protection.
+- Added and PASS: host participation focus reset.
+- All JavaScript modules in the exact v0.7.30 itch build pass `node --check`.
+- index.html references were verified to exist inside the package tree.
+- Server code/package intentionally remains unchanged (server package v0.7.24), so Render does not need a deployment for v0.7.30.
+
+SCOPE
+- No bowling physics changes.
+- No scoring changes.
+- No King-of-the-Court movement changes.
+- No matchmaking changes.
+- No spectator logic changes.
+- No maths/scoring-overlay changes.
+- No server changes.
