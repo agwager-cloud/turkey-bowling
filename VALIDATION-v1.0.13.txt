@@ -1,0 +1,27 @@
+Dodeca-Gems v1.0.13 — validation
+
+Scope
+- Client-only host matchup focus / round-handoff correction on top of v1.0.12.
+- server/src/index.ts SHA256 is unchanged from v1.0.12.
+
+Investigation
+- v1.0.12 correctly fixed the initial Championship scroll race, but a participating host still always preferred Championship while viewing Matchups.
+- The manual forcedMatchupView flag was global rather than tied to a match ID, so it could survive into a newly-created host pairing and suppress the new game view.
+
+Fixes verified
+- Participating host -> own court.
+- Opted-out host -> Championship court.
+- Manual Matchups mode is scoped to the current match ID and expires when a new host match becomes live.
+- Focus key changes only with the target pairing/participation state; manual scrolling is preserved during the same pairing.
+- Stale carousel callbacks remain guarded against replaced DOM.
+
+Checks
+- Static host-focus regression checks: PASS.
+- TypeScript transpileModule syntax diagnostics for client/src/main.ts: 0.
+- Exact itch package: all 5 JavaScript modules pass node --check.
+- Exact itch package index references resolve.
+- Compared with v1.0.12 itch build: only main.js and index.html changed.
+- server/src/index.ts SHA256 unchanged: 486a2022f1d36a10f51097ea3a6d887927385b05f2918cdc349d63d26c0944ed.
+
+Build note
+- A full npm/Vite dependency build was not used because the retained archive has no installed node_modules. The changed TypeScript was transpiled with TypeScript and injected into the known-good v1.0.12 itch package; the resulting browser modules were syntax checked.
