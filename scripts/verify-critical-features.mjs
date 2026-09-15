@@ -10,11 +10,13 @@ const checks = [
   ['landscape maths keypad stays three columns', 'client/src/style.css', /v0\.7\.29[\s\S]*math-keypad[\s\S]*grid-template-columns:\s*repeat\(3,/],
   ['keyboard numpad digit order', 'client/src/scenes/BowlingScene.ts', /\[7, 8, 9, 4, 5, 6, 1, 2, 3\]/],
   ['landscape maths card avoids scrollbar at standard height', 'client/src/style.css', /math-card\s*\{[\s\S]*overflow:\s*hidden/],
-  ['host Championship default waits for real layout', 'client/src/scenes/MatchupScene.ts', /laneScrollInitialized[\s\S]*Host view deliberately opens on the right-most Championship Lane/],
+  ['host focus follows participation state', 'client/src/scenes/MatchupScene.ts', /preferredFocusKey[\s\S]*hostParticipating[\s\S]*championship/],
   ['stale matchup carousel callbacks ignored', 'client/src/scenes/MatchupScene.ts', /laneRenderGeneration[\s\S]*isCurrentTrack/],
   ['host participation resets matchup focus', 'client/src/scenes/MatchupScene.ts', /Host participation changes rebuild\/reassign lanes[\s\S]*laneDefaultApplied = false[\s\S]*laneScrollInitialized = false/],
   ['host OPT OUT button', 'client/src/scenes/MatchupScene.ts', /OPT OUT/],
   ['host participation network command', 'client/src/net/NetworkManager.ts', /setHostParticipation\(participating\).*set_host_participation/s],
+  ['spectator result overlay persists until navigation', 'client/src/scenes/LiveSpectatorScene.ts', /renderSpectatorMatchResult[\s\S]*RETURN TO MATCHUPS/],
+  ['round complete preserves watched result', 'client/src/scenes/LiveSpectatorScene.ts', /roundComplete[\s\S]*result\.matches\.some[\s\S]*this\.render\(result\)/],
   ['active-shot render protection', 'client/src/scenes/BowlingScene.ts', /localShotInFlight/],
   ['shot ID tracking', 'client/src/scenes/BowlingScene.ts', /activeShotId/],
   ['match + shot ID result send', 'client/src/scenes/BowlingScene.ts', /rollBall\(matchId, shotId,/],
@@ -47,4 +49,4 @@ if (failed) {
   console.error('\nCritical Turkey Bowling regression detected. Build stopped.');
   process.exit(1);
 }
-console.log('\nCritical v0.7.30 Championship-view stability, navigation and calculator keypad layout verified.');
+console.log('\nCritical v0.7.32 host-focus, spectator-result, navigation and calculator keypad protections verified.');

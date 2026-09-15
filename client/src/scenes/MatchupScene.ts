@@ -11,6 +11,7 @@ export class MatchupScene extends BaseBowlingScene {
     laneAnchorMatchId = null;
     laneDefaultApplied = false;
     laneScrollInitialized = false;
+    laneFocusKey = '';
     laneRenderGeneration = 0;
     laneInteractionUntil = 0;
     deferredRenderTimer = 0;
@@ -24,6 +25,7 @@ export class MatchupScene extends BaseBowlingScene {
         this.laneAnchorMatchId = null;
         this.laneDefaultApplied = false;
         this.laneScrollInitialized = false;
+        this.laneFocusKey = '';
         this.laneRenderGeneration = 0;
         this.laneInteractionUntil = 0;
         this.participationBusy = false;
@@ -117,6 +119,21 @@ export class MatchupScene extends BaseBowlingScene {
         const liveBowling = room.status === 'bowling';
         const firstRoundWaiting = room.status === 'matchup' && appState.matchupEndsAt === null;
         const autoCountdown = room.status === 'matchup' && appState.matchupEndsAt !== null;
+        const championshipLane = appState.matchups.find((match) => match.championship) ?? appState.matchups[appState.matchups.length - 1];
+        // One stable focus target per pairing: a participating host follows their
+        // own lane; an opted-out host follows Championship. The key changes only
+        // when that pairing/participation target changes, so live updates do not
+        // tug the carousel between the left and right sides.
+        const preferredFocusKey = isHost
+            ? (hostParticipating && myLane ? `host:${myLane.id}` : `championship:${championshipLane?.id ?? appState.matchups.length}`)
+            : `player:${myLane?.id ?? `fallback-${appState.matchups.length}`}`;
+        if (preferredFocusKey !== this.laneFocusKey) {
+            this.laneFocusKey = preferredFocusKey;
+            this.laneScrollLeft = 0;
+            this.laneAnchorMatchId = null;
+            this.laneDefaultApplied = false;
+            this.laneScrollInitialized = false;
+        }
         // No device may spectate over its own live match. Hosts who want to teach
         // from spectator mode can use OPT OUT, then every live lane becomes watchable.
         const canWatchOtherLanes = liveBowling && !myActiveMatch;
@@ -221,11 +238,13 @@ export class MatchupScene extends BaseBowlingScene {
             }
             this.participationBusy = true;
             // Host participation changes rebuild/reassign lanes. Treat the next
-            // overview as a fresh host view so it opens on Championship again.
+            // overview as a fresh host view so the new focus rule can choose the
+            // host's own lane when playing, or Championship when opted out.
             this.laneScrollLeft = 0;
             this.laneAnchorMatchId = null;
             this.laneDefaultApplied = false;
             this.laneScrollInitialized = false;
+            this.laneFocusKey = '';
             const button = event.currentTarget;
             button.disabled = true;
             button.textContent = 'UPDATING…';
@@ -367,17 +386,21 @@ export class MatchupScene extends BaseBowlingScene {
                 centreCard(anchored);
             }
             else if (!this.laneDefaultApplied || !this.laneScrollInitialized) {
-                // Host view deliberately opens on the right-most Championship Lane.
-                if (isHost)
+                const myLane = appState.matchups.find((match) => isMyMatch(match));
+                const me = appState.room?.players.find((player) => player.id === appState.playerId);
+                const hostParticipating = me?.participating !== false;
+                const myCard = myLane ? track.querySelector(`[data-match-id="${myLane.id}"]`) : null;
+                // Participating hosts must see their own lane. Only spectator-only
+                // hosts default to Championship. This removes the old left-vs-right
+                // focus conflict while retaining manual scrolling within a pairing.
+                if (isHost && hostParticipating && myCard)
+                    centreCard(myCard);
+                else if (isHost)
                     track.scrollLeft = maxScroll;
-                else {
-                    const myLane = appState.matchups.find((match) => isMyMatch(match));
-                    const myCard = myLane ? track.querySelector(`[data-match-id="${myLane.id}"]`) : null;
-                    if (myCard)
-                        centreCard(myCard);
-                    else
-                        track.scrollLeft = Math.max(0, Math.min(maxScroll, this.laneScrollLeft));
-                }
+                else if (myCard)
+                    centreCard(myCard);
+                else
+                    track.scrollLeft = Math.max(0, Math.min(maxScroll, this.laneScrollLeft));
                 this.laneDefaultApplied = true;
                 this.laneScrollInitialized = true;
                 this.captureLanePosition(track);

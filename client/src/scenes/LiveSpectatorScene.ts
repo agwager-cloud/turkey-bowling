@@ -64,8 +64,16 @@ export class LiveSpectatorScene extends BaseBowlingScene {
         }), network.on('roundComplete', (result) => {
             appState.room = result.room;
             appState.tournament = result;
+            appState.matchups = result.matches;
             appState.roundResult = result;
-            this.backToMatchups();
+            // The watched lane may be the final match to finish. Keep its result
+            // visible instead of letting the class round-complete event yank the
+            // spectator back to Matchups before they can read the winner/score.
+            if (result.matches.some((candidate) => candidate.id === matchId)) {
+                this.render(result);
+                return;
+            }
+            this.backToMatchups(false);
         }), network.on('matchStarted', (message) => {
             appState.room = message.room;
             appState.matchups = message.matchups;
@@ -161,13 +169,15 @@ export class LiveSpectatorScene extends BaseBowlingScene {
             <div class="global-spectator-note">Live spectator view mirrors the real lane. Aim, hook, power/release controls and private keypad entry are intentionally hidden.</div>
           </section>
         </main>
-      </div>`;
+      </div>
+      ${match.complete ? renderSpectatorMatchResult(match) : ''}`;
         const canvas = this.ui.querySelector('#bowling-sim-canvas');
         if (canvas) {
             this.simulator = new BowlingSimulator(canvas, standingPins);
             this.simulator.setSetupVisible(false);
         }
         this.ui.querySelector('#spectator-matchups')?.addEventListener('click', () => this.backToMatchups());
+        this.ui.querySelector('#spectator-result-matchups')?.addEventListener('click', () => this.backToMatchups());
         this.ui.querySelector('#spectator-own-game')?.addEventListener('click', () => this.returnToOwnGame());
         this.ui.querySelector('#spectator-lobby')?.addEventListener('click', () => this.openReturnLobbyConfirm());
         if (lanePaused && match.reconnectEndsAt)
@@ -176,10 +186,6 @@ export class LiveSpectatorScene extends BaseBowlingScene {
             this.runMathClock(mathGame.mathEndsAt, state.room.level);
         else if (activePlayer && activeGame && match.currentPlayerId === activePlayer.id && (!activeGame.complete || match.bowlOffActive))
             this.runShotClock(match.turnEndsAt);
-        if (match.complete) {
-            window.clearTimeout(this.returnTimer);
-            this.returnTimer = window.setTimeout(() => this.backToMatchups(), 1350);
-        }
     }
     runShotClock(turnEndsAt) {
         cancelAnimationFrame(this.shotClockFrame);
@@ -459,6 +465,52 @@ function renderGlobalSpectatorPanel(player, game, match, level, mathFrame) {
     </div>`;
     }
     return `<div class="spectator-turn-panel quiet"><strong>WAITING</strong><span>The next live action will appear automatically.</span></div>`;
+}
+function renderSpectatorMatchResult(match) {
+    const winner = playerInMatch(match, match.winnerId);
+    const loserId = match.winnerId === match.playerA.id ? match.playerB?.id : match.playerA.id;
+    const loser = playerInMatch(match, loserId);
+    const aGame = match.games.find((game) => game.playerId === match.playerA.id);
+    const bGame = match.playerB ? match.games.find((game) => game.playerId === match.playerB.id) : null;
+    const aScore = spectatorDisplayScore(aGame);
+    const bScore = spectatorDisplayScore(bGame);
+    const forfeit = Boolean(match.forfeitPlayerId);
+    const removedPlayer = match.forfeitPlayerId ? playerInMatch(match, match.forfeitPlayerId) : null;
+    const bowlOffRounds = match.bowlOffHistory ?? [];
+    const lastBowlOff = bowlOffRounds[bowlOffRounds.length - 1];
+    const resultTitle = forfeit
+        ? `${winner?.name ?? 'Winner'} wins by forfeit`
+        : `${winner?.name ?? 'Winner'} wins!`;
+    const scoreMarkup = forfeit
+        ? `<div class="spectator-result-forfeit"><strong>WIN BY FORFEIT</strong><span>${removedPlayer ? `${escapeHtml(removedPlayer.name)} forfeited the match.` : 'The opponent forfeited the match.'}</span><small>Score at stoppage: ${escapeHtml(match.playerA.name)} ${aScore} – ${bScore} ${escapeHtml(match.playerB?.name ?? 'Opponent')}</small></div>`
+        : `<div class="spectator-result-scoreline"><div><span>${escapeHtml(match.playerA.name)}</span><strong>${aScore}</strong></div><em>–</em><div><span>${escapeHtml(match.playerB?.name ?? 'Opponent')}</span><strong>${bScore}</strong></div></div>`;
+    const bowlOffMarkup = match.tieBreak
+        ? `<div class="spectator-result-bowloff"><strong>🔥 DECIDED BY BOWL-OFF</strong>${lastBowlOff ? `<span>Round ${lastBowlOff.round}: ${escapeHtml(match.playerA.name)} ${lastBowlOff.playerAScore}–${lastBowlOff.playerBScore} ${escapeHtml(match.playerB?.name ?? 'Opponent')}</span>` : '<span>Bowl-Off result recorded.</span>'}</div>`
+        : '';
+    return `<div class="spectator-result-overlay" role="dialog" aria-modal="true" aria-live="assertive">
+      <section class="spectator-result-card panel">
+        <div class="spectator-result-kicker">${match.tieBreak ? 'BOWL-OFF RESULT' : 'SPECTATOR MATCH RESULT'}</div>
+        <div class="spectator-result-icon">🏆</div>
+        <h1>${escapeHtml(resultTitle)}</h1>
+        ${scoreMarkup}
+        ${bowlOffMarkup}
+        <p>The result will stay here until you return to the live Matchups board.</p>
+        <button id="spectator-result-matchups" class="primary-btn spectator-result-button" type="button">← RETURN TO MATCHUPS</button>
+      </section>
+    </div>`;
+}
+function spectatorDisplayScore(game) {
+    if (!game)
+        return 0;
+    const explicit = game.finalScore ?? game.total ?? game.rawTotal;
+    if (Number.isFinite(explicit))
+        return explicit;
+    for (let index = (game.cumulative?.length ?? 0) - 1; index >= 0; index--) {
+        const value = game.cumulative[index];
+        if (Number.isFinite(value))
+            return value;
+    }
+    return 0;
 }
 function renderMiniScorecard(game, focusFrame) {
     return `<div class="math-scorecard-shell spectator-mini-scorecard">

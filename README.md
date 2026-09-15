@@ -1,40 +1,19 @@
-# Dodeca-Gems v1.0.13
+# Turkey Bowling v0.7.32
 
-Dodeca-Gems is a 12-game multiplayer classroom King-of-the-Court game hub built with Phaser, TypeScript, Vite and a server-authoritative Node/WebSocket backend.
+Turkey Bowling is a classroom multiplayer ten-pin bowling game with a live King-of-the-Court ladder, host opt-in/opt-out controls, live spectating, score verification and maths checks.
 
-## Games
+## v0.7.32 hotfix
 
-1. Three Hexagon
-2. Four Star
-3. Square Boxes
-4. Never Touch!
-5. Spiral
-6. Hex
-7. The Factor Game
-8. Hedron
-9. Multi
-10. Ultimate Tic-Tac-Toe
-11. Lucky Thirteen
-12. Craypots
-
-## Multiplayer systems
-
-- Five-digit rooms and up to 40 connected players
-- King-of-the-Court movement and +1 point for every match win
-- One crown for the current Championship holder
-- Host Manage Players during matchups and games
-- Removed names are banned from rejoining that room until changed
-- Duplicate-name and duplicate-device protections
-- Host OPT OUT / OPT IN from the Matchups screen; opting out of a live match forfeits that match to the opponent
-- Gem Bot parity automatically keeps the active ladder even when the host opts in/out
-- Late joins and exact server-synchronised live spectating for hosts, waiting players and spectators
-- Host Matchups opens on the Championship court and preserves horizontal scroll position during live updates
-- Server-authoritative timers and legal-move validation
-- Direct secure WebSocket connection for production; no HTTP `/health` wake request
+- Participating host Matchups focus follows the host's own lane.
+- Opted-out host Matchups focus defaults to the right-most Championship lane.
+- Focus is keyed to the current pairing/participation state so live updates do not drag the carousel away from the intended lane.
+- Spectators now receive a clear end-of-match winner and score result instead of a brief generic `MATCH COMPLETE` message.
+- The spectator result remains visible until Return to Matchups is selected, and the class `round_complete` event no longer cuts it off.
+- The GitHub client entry point/package metadata were repaired after Dodeca-Gems files had been mixed into the Turkey Bowling source tree.
 
 ## Local development
 
-Node.js 20+ is recommended.
+Node.js 20–23 is supported.
 
 ```powershell
 npm install
@@ -42,8 +21,8 @@ npm run dev
 ```
 
 Client: `http://localhost:5173`
-Server: `ws://localhost:3001`
+Server: `ws://localhost:8080`
 
-## Production
+## Production server
 
-See `DEPLOYMENT.md`.
+The client connects to the Turkey Bowling Render WebSocket service configured in `client/src/net/NetworkManager.ts`.
