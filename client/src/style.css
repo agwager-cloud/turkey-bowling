@@ -3055,3 +3055,52 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none !important;
   .leaderboard-column-heads,
   .leaderboard-row { grid-template-columns: 22px minmax(58px, 1fr) 40px 30px 40px 31px; }
 }
+
+
+/* ===== v0.7.35 wider polished live scoreboard ===== */
+/* Give the sortable scoreboard enough room for the complete rounded row cards. */
+.match-board-layout {
+  grid-template-columns: minmax(0, 1fr) minmax(285px, 340px);
+  gap: 12px;
+}
+.match-leaderboard {
+  min-width: 0;
+  padding-left: 12px;
+  padding-right: 12px;
+}
+.leaderboard-list {
+  overflow-x: hidden;
+  padding-left: 1px;
+  padding-right: 4px;
+}
+.leaderboard-row {
+  width: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 1050px) and (orientation: landscape) {
+  .match-board-layout {
+    grid-template-columns: minmax(0, 1fr) 270px;
+    gap: 10px;
+  }
+  .match-leaderboard {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+}
+
+@media (max-width: 860px) and (orientation: landscape) {
+  .match-board-layout {
+    grid-template-columns: minmax(0, 1fr) 255px;
+  }
+}
+
+@media (orientation: portrait) {
+  .match-board-layout {
+    display: flex;
+  }
+  .match-leaderboard {
+    padding-left: 11px;
+    padding-right: 11px;
+  }
+}

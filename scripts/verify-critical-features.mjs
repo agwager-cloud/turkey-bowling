@@ -57,4 +57,4 @@ if (failed) {
   console.error('\nCritical Turkey Bowling regression detected. Build stopped.');
   process.exit(1);
 }
-console.log('\nCritical v0.7.34 sortable PB scoreboard, uninterrupted spectator replay, host-focus, spectator-result, navigation and calculator keypad protections verified.');
+console.log('\nCritical v0.7.35 scoreboard layout, sortable PB scoreboard, uninterrupted spectator replay, host-focus, spectator-result, navigation and calculator keypad protections verified.');

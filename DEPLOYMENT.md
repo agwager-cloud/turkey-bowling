@@ -1,15 +1,15 @@
-# Turkey Bowling v0.7.34 Deployment
+# Turkey Bowling v0.7.35 Deployment
 
-v0.7.34 changes both the client and server.
+v0.7.35 is a **client-only cosmetic hotfix**. There are no server code changes from v0.7.34.
 
-## 1. GitHub / Render
-Apply the supplied GitHub hotfix over the Turkey Bowling repository, commit, and push to `main`.
-Because `server/src/index.ts` and `server/package.json` change in this release, Render should automatically redeploy `turkey-bowling-server` when its Root Directory is `server`.
+## itch.io
 
-Wait until Render shows the Turkey Bowling service as **Deployed** on the new commit before classroom testing.
+Upload the supplied v0.7.35 itch ZIP as the HTML5 build. `index.html` is at the ZIP root.
 
-## 2. itch.io
-Upload the supplied v0.7.34 itch ZIP as the HTML5 build. `index.html` is at the ZIP root.
+## GitHub
 
-## 3. Quick test
-Complete one 10-frame game, confirm PB remains on the next matchup, then click SCORE, PB and WINS on the host leaderboard and confirm each sorts highest-to-lowest.
+Apply the v0.7.35 GitHub hotfix over the existing repository, commit the changed client/release files, and push to `main`.
+
+## Render
+
+No Render redeploy is required for v0.7.35 because `server/` is unchanged. If Render is configured with `rootDir: server`, it is normal for this GitHub push not to trigger a new server deployment.
