@@ -18,6 +18,11 @@ export class LiveSpectatorScene extends BaseBowlingScene {
     spectatorStandingBefore = 10;
     spectatorGameAtRelease;
     spectatorBowlOff = false;
+    shotPlaybackActive = false;
+    pendingRenderState = null;
+    queuedSpectatorShots = [];
+    playbackHoldTimer = 0;
+    pendingNavigation = null;
     constructor() { super('LiveSpectatorScene'); }
     create() {
         this.setupBaseScene();
@@ -26,6 +31,12 @@ export class LiveSpectatorScene extends BaseBowlingScene {
         this.returnTimer = 0;
         this.lastMatchFingerprint = '';
         this.spectatorBowlOff = false;
+        this.shotPlaybackActive = false;
+        this.pendingRenderState = null;
+        this.queuedSpectatorShots = [];
+        this.pendingNavigation = null;
+        window.clearTimeout(this.playbackHoldTimer);
+        this.playbackHoldTimer = 0;
         this.simulator?.destroy();
         this.simulator = undefined;
         const matchId = appState.spectatingMatchId;
@@ -40,8 +51,12 @@ export class LiveSpectatorScene extends BaseBowlingScene {
             if (this.shouldReturnToOwnGame(state))
                 return void this.returnToOwnGame();
             const fingerprint = watchedMatchFingerprint(state, matchId);
-            if (fingerprint !== this.lastMatchFingerprint)
-                this.render(state);
+            if (fingerprint !== this.lastMatchFingerprint) {
+                if (this.shotPlaybackActive)
+                    this.pendingRenderState = state;
+                else
+                    this.render(state);
+            }
         }), network.on('bowlingState', (state) => {
             appState.room = state.room;
             appState.tournament = state;
@@ -49,8 +64,12 @@ export class LiveSpectatorScene extends BaseBowlingScene {
             if (this.shouldReturnToOwnGame(state))
                 return void this.returnToOwnGame();
             const fingerprint = watchedMatchFingerprint(state, matchId);
-            if (fingerprint !== this.lastMatchFingerprint)
-                this.render(state);
+            if (fingerprint !== this.lastMatchFingerprint) {
+                if (this.shotPlaybackActive)
+                    this.pendingRenderState = state;
+                else
+                    this.render(state);
+            }
         }), network.on('roomState', (room) => {
             if (room.status !== 'lobby')
                 return;
@@ -70,7 +89,10 @@ export class LiveSpectatorScene extends BaseBowlingScene {
             // visible instead of letting the class round-complete event yank the
             // spectator back to Matchups before they can read the winner/score.
             if (result.matches.some((candidate) => candidate.id === matchId)) {
-                this.render(result);
+                if (this.shotPlaybackActive)
+                    this.pendingRenderState = result;
+                else
+                    this.render(result);
                 return;
             }
             this.backToMatchups(false);
@@ -79,14 +101,21 @@ export class LiveSpectatorScene extends BaseBowlingScene {
             appState.matchups = message.matchups;
             appState.matchupEndsAt = message.phaseEndsAt;
             appState.roundResult = null;
-            this.backToMatchups(false);
+            if (this.shotPlaybackActive)
+                this.pendingNavigation = { type: 'matchups', sendStop: false };
+            else
+                this.backToMatchups(false);
         }), network.on('finalResults', (results) => {
             appState.room = results.room;
             appState.finalResults = results;
+            if (this.shotPlaybackActive) {
+                this.pendingNavigation = { type: 'finalResults', results };
+                return;
+            }
             appState.spectatingMatchId = null;
             network.stopWatchingMatch();
             this.scene.start('FinalResultsScene');
-        }), network.on('spectatorShot', (shot) => void this.playSpectatorShot(shot)), network.on('spectatorShotResult', (result) => this.handleSpectatorShotResult(result)), network.on('error', ({ code, message }) => {
+        }), network.on('spectatorShot', (shot) => this.receiveSpectatorShot(shot)), network.on('spectatorShotResult', (result) => this.handleSpectatorShotResult(result)), network.on('error', ({ code, message }) => {
             if (code === 'MATCH_NOT_LIVE' || code === 'OWN_MATCH_ACTIVE' || code === 'NOT_BOWLING') {
                 this.showToast(message);
                 window.setTimeout(() => this.backToMatchups(false), 450);
@@ -97,6 +126,12 @@ export class LiveSpectatorScene extends BaseBowlingScene {
         this.events.once('shutdown', () => {
             window.clearTimeout(this.returnTimer);
             this.returnTimer = 0;
+            window.clearTimeout(this.playbackHoldTimer);
+            this.playbackHoldTimer = 0;
+            this.shotPlaybackActive = false;
+            this.pendingRenderState = null;
+            this.queuedSpectatorShots = [];
+            this.pendingNavigation = null;
             this.stopClocks();
             this.simulator?.destroy();
             this.simulator = undefined;
@@ -259,6 +294,52 @@ export class LiveSpectatorScene extends BaseBowlingScene {
         this.mathClockFrame = 0;
         this.reconnectClockFrame = 0;
     }
+    receiveSpectatorShot(shot) {
+        if (!shot || shot.matchId !== appState.spectatingMatchId)
+            return;
+        // A fast player's result/state packet can arrive while a slower host
+        // device is still animating the exact seeded delivery. Never allow the
+        // next bowl to destroy the current canvas; queue it and replay every
+        // delivery in order.
+        if (this.shotPlaybackActive) {
+            this.queuedSpectatorShots.push(shot);
+            return;
+        }
+        void this.playSpectatorShot(shot);
+    }
+    async finishSpectatorPlayback() {
+        if (!this.scene.isActive())
+            return;
+        // Hold the settled rack briefly so the host actually sees the pinfall
+        // before the latest authoritative score/frame state rebuilds the lane.
+        await new Promise((resolve) => {
+            window.clearTimeout(this.playbackHoldTimer);
+            this.playbackHoldTimer = window.setTimeout(resolve, 700);
+        });
+        this.playbackHoldTimer = 0;
+        if (!this.scene.isActive())
+            return;
+        this.shotPlaybackActive = false;
+        const pendingState = this.pendingRenderState;
+        this.pendingRenderState = null;
+        if (pendingState)
+            this.render(pendingState);
+        const navigation = this.pendingNavigation;
+        this.pendingNavigation = null;
+        if (navigation?.type === 'finalResults') {
+            appState.spectatingMatchId = null;
+            network.stopWatchingMatch();
+            this.scene.start('FinalResultsScene');
+            return;
+        }
+        if (navigation?.type === 'matchups') {
+            this.backToMatchups(Boolean(navigation.sendStop));
+            return;
+        }
+        const nextShot = this.queuedSpectatorShots.shift();
+        if (nextShot)
+            this.receiveSpectatorShot(nextShot);
+    }
     async playSpectatorShot(shot) {
         if (!this.scene.isActive() || !this.ui || !this.simulator || shot.matchId !== appState.spectatingMatchId)
             return;
@@ -267,6 +348,7 @@ export class LiveSpectatorScene extends BaseBowlingScene {
         const bowler = match ? playerInMatch(match, shot.playerId) : null;
         if (!match || !bowler)
             return;
+        this.shotPlaybackActive = true;
         this.spectatorBowlOff = match.bowlOffActive;
         cancelAnimationFrame(this.shotClockFrame);
         this.shotClockFrame = 0;
@@ -320,10 +402,16 @@ export class LiveSpectatorScene extends BaseBowlingScene {
             });
         }
         catch {
+            this.shotPlaybackActive = false;
+            const nextShot = this.queuedSpectatorShots.shift();
+            if (nextShot)
+                this.receiveSpectatorShot(nextShot);
             return;
         }
-        if (!this.scene.isActive() || !this.ui || this.spectatorPlayerId !== shot.playerId)
+        if (!this.scene.isActive() || !this.ui || this.spectatorPlayerId !== shot.playerId) {
+            this.shotPlaybackActive = false;
             return;
+        }
         if (speed)
             speed.textContent = `BALL SPEED ${result.speedKmh.toFixed(1)} KM/H`;
         const label = this.spectatorBowlOff
@@ -346,6 +434,7 @@ export class LiveSpectatorScene extends BaseBowlingScene {
             else
                 audioDirector.playSpare();
         }
+        await this.finishSpectatorPlayback();
     }
     handleSpectatorShotResult(result) {
         if (!this.scene.isActive() || !this.ui || result.matchId !== appState.spectatingMatchId || result.playerId !== this.spectatorPlayerId)

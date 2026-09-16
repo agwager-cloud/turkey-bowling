@@ -820,10 +820,10 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none !important;
 }
 .leaderboard-row {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) 38px;
+  grid-template-columns: 26px minmax(56px, 1fr) 42px 34px 30px;
   align-items: center;
-  gap: 6px;
-  padding: 7px 8px;
+  gap: 4px;
+  padding: 6px 6px;
   border: 2px solid #e0cee2;
   border-radius: 10px;
   background: #fffdf8;
@@ -836,9 +836,22 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none !important;
   border-color: #d89524;
   background: linear-gradient(90deg, #fff0a4, #ffd968);
 }
-.leaderboard-pos { text-align: center; font-size: 14px; font-weight: 1000; }
+.leaderboard-pos { text-align: center; font-size: 13px; font-weight: 1000; }
 .leaderboard-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 1000; }
-.leaderboard-row strong { text-align: center; font-size: 15px; color: #4c255c; }
+.leaderboard-metric {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  justify-items: center;
+  gap: 2px;
+  white-space: nowrap;
+}
+.leaderboard-metric small { color: #9a7ba0; font-size: 7px; font-weight: 1000; letter-spacing: .15px; }
+.leaderboard-metric strong { color: #4c255c; font-size: 14px; font-weight: 1000; line-height: 1; }
+.leaderboard-score strong { color: #6a2c7b; font-size: 16px; }
+.leaderboard-frame strong { color: #7a536f; }
+.leaderboard-wins strong { color: #a66b17; }
 
 .panel-lite {
   border: 2px solid rgba(255,255,255,.35);
@@ -2968,4 +2981,17 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none !important;
   .spectator-result-scoreline { gap: 7px; padding: 11px 8px; }
   .spectator-result-scoreline span { font-size: 10px; }
   .spectator-result-card > p { font-size: 10px; }
+}
+
+
+/* ===== v0.7.33 live class scores + uninterrupted spectator bowl replay ===== */
+@media (max-width: 1050px) and (orientation: landscape) {
+  .leaderboard-row { grid-template-columns: 22px minmax(48px, 1fr) 38px 31px 28px; gap: 3px; padding: 6px 4px; }
+  .leaderboard-name { font-size: 10px; }
+  .leaderboard-metric small { font-size: 6px; }
+  .leaderboard-metric strong { font-size: 12px; }
+  .leaderboard-score strong { font-size: 14px; }
+}
+@media (max-width: 420px) and (orientation: portrait) {
+  .leaderboard-row { grid-template-columns: 24px minmax(68px, 1fr) 44px 36px 31px; }
 }

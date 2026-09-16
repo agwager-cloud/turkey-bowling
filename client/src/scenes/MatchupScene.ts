@@ -137,7 +137,7 @@ export class MatchupScene extends BaseBowlingScene {
         // No device may spectate over its own live match. Hosts who want to teach
         // from spectator mode can use OPT OUT, then every live lane becomes watchable.
         const canWatchOtherLanes = liveBowling && !myActiveMatch;
-        const leaderboard = sortLeaderboard(room);
+        const leaderboard = buildLiveLeaderboard(room, appState.tournament);
         const liveCount = liveBowling ? (appState.tournament?.matches.filter((match) => !match.complete && Boolean(match.playerB)).length ?? 0) : 0;
         const previousTrack = this.ui.querySelector('#lane-track');
         // Do not preserve scrollLeft until the first real lane layout has been
@@ -174,15 +174,17 @@ export class MatchupScene extends BaseBowlingScene {
           </section>
 
           <aside class="match-leaderboard panel">
-            <div class="leaderboard-title-row"><h2>Wins Leaderboard</h2><span>LIVE STANDINGS</span></div>
+            <div class="leaderboard-title-row"><h2>Live Scoreboard</h2><span>SCORE • FRAME • WINS</span></div>
             <div class="leaderboard-scroll-shell">
               <button id="leaderboard-up" class="leaderboard-page-btn leaderboard-page-up" type="button" aria-label="View previous leaderboard names" title="Previous leaderboard page">▲</button>
               <div id="leaderboard-list" class="leaderboard-list">
-                ${leaderboard.map((player, index) => `
-                  <div class="leaderboard-row${player.id === appState.playerId ? ' me' : ''}${player.id === room.championId ? ' champion' : ''}" data-leaderboard-rank="${index + 1}">
-                    <span class="leaderboard-pos">${player.id === room.championId ? '👑' : index + 1}</span>
-                    <span class="leaderboard-name">${escapeHtml(player.name)}</span>
-                    <strong>${player.wins}</strong>
+                ${leaderboard.map((entry, index) => `
+                  <div class="leaderboard-row${entry.player.id === appState.playerId ? ' me' : ''}${entry.player.id === room.championId ? ' champion' : ''}" data-leaderboard-rank="${index + 1}">
+                    <span class="leaderboard-pos">${entry.player.id === room.championId ? '👑' : index + 1}</span>
+                    <span class="leaderboard-name" title="${escapeHtml(entry.player.name)}">${escapeHtml(entry.player.name)}</span>
+                    <span class="leaderboard-metric leaderboard-score" title="Current bowling score"><small>S</small><strong>${entry.scoreLabel}</strong></span>
+                    <span class="leaderboard-metric leaderboard-frame" title="Current frame"><small>F</small><strong>${entry.frameLabel}</strong></span>
+                    <span class="leaderboard-metric leaderboard-wins" title="Match wins"><small>W</small><strong>${entry.player.wins}</strong></span>
                   </div>`).join('')}
               </div>
               <div id="leaderboard-range" class="leaderboard-range" aria-live="polite">${leaderboard.length ? `1–${Math.min(leaderboard.length, 1)} of ${leaderboard.length}` : '0 of 0'}</div>
@@ -566,14 +568,51 @@ function renderLaneCard(match, live, isHost, canWatchOtherLanes) {
     </div>
   </article>`;
 }
-function sortLeaderboard(room) {
-    return [...room.players].sort((a, b) => {
-        if (a.id === room.championId && b.id !== room.championId)
-            return -1;
-        if (b.id === room.championId && a.id !== room.championId)
-            return 1;
-        return b.wins - a.wins || b.lane - a.lane || a.name.localeCompare(b.name);
+function buildLiveLeaderboard(room, tournament) {
+    const matches = tournament?.matches ?? [];
+    const entries = room.players.map((player) => {
+        const match = matches
+            .filter((candidate) => candidate.playerA.id === player.id || candidate.playerB?.id === player.id)
+            .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))[0];
+        const game = match?.games?.find((candidate) => candidate.playerId === player.id);
+        const liveScore = currentVisibleScore(game);
+        const inactive = player.participating === false;
+        const bye = Boolean(match && !match.playerB);
+        return {
+            player,
+            liveScore,
+            liveFrame: game ? Math.max(1, Math.min(10, Number(game.currentFrame) || 1)) : 0,
+            scoreLabel: inactive ? '—' : game ? String(liveScore) : bye ? 'BYE' : '—',
+            frameLabel: inactive ? '—' : game ? String(Math.max(1, Math.min(10, Number(game.currentFrame) || 1))) : bye ? 'BYE' : '—'
+        };
     });
+    return entries.sort((a, b) => {
+        // The host needs an at-a-glance live class ranking, so current bowling
+        // score is the primary order while a round is in progress. Wins remain
+        // visible and act as a sensible tie-breaker before anyone has bowled.
+        const aActive = a.player.participating !== false && a.liveFrame > 0;
+        const bActive = b.player.participating !== false && b.liveFrame > 0;
+        if (aActive !== bActive)
+            return aActive ? -1 : 1;
+        return b.liveScore - a.liveScore
+            || b.liveFrame - a.liveFrame
+            || b.player.wins - a.player.wins
+            || b.player.lane - a.player.lane
+            || a.player.name.localeCompare(b.player.name);
+    });
+}
+function currentVisibleScore(game) {
+    if (!game)
+        return 0;
+    const explicit = game.finalScore ?? game.total ?? game.rawTotal;
+    if (Number.isFinite(explicit))
+        return Math.max(0, Math.trunc(explicit));
+    for (let index = Math.min(9, (game.cumulative?.length ?? 0) - 1); index >= 0; index--) {
+        const value = game.cumulative[index];
+        if (Number.isFinite(value))
+            return Math.max(0, Math.trunc(value));
+    }
+    return 0;
 }
 function renderManagePlayersOverlay(room, hostPlayerId) {
     const humanPlayers = room.players.filter((player) => !player.isBot);
