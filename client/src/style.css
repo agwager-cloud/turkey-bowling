@@ -2995,3 +2995,63 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none !important;
 @media (max-width: 420px) and (orientation: portrait) {
   .leaderboard-row { grid-template-columns: 24px minmax(68px, 1fr) 44px 36px 31px; }
 }
+
+/* ===== v0.7.34 sortable live scoreboard + persistent personal best ===== */
+.leaderboard-column-heads {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: 24px minmax(52px, 1fr) 42px 30px 42px 34px;
+  align-items: center;
+  gap: 3px;
+  padding: 0 5px 5px;
+  color: #8c7192;
+  font-size: 7px;
+  line-height: 1;
+  font-weight: 1000;
+  letter-spacing: .2px;
+  text-align: center;
+}
+.leaderboard-head-player { text-align: left; }
+.leaderboard-sort-btn {
+  min-width: 0;
+  padding: 4px 2px;
+  border: 1px solid rgba(94,43,113,.18);
+  border-radius: 7px;
+  background: rgba(94,43,113,.06);
+  color: #75527d;
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  touch-action: manipulation;
+}
+.leaderboard-sort-btn:hover { background: rgba(94,43,113,.12); color: #5e2b71; }
+.leaderboard-sort-btn.active {
+  border-color: rgba(94,43,113,.38);
+  background: #633483;
+  color: #fff2aa;
+  box-shadow: 0 2px 0 #351747;
+}
+.leaderboard-row {
+  grid-template-columns: 24px minmax(52px, 1fr) 42px 30px 42px 34px;
+  gap: 3px;
+  padding-left: 5px;
+  padding-right: 5px;
+}
+.leaderboard-metric {
+  display: block;
+  text-align: center;
+}
+.leaderboard-pb strong { color: #23805f; font-size: 14px; }
+
+@media (max-width: 1050px) and (orientation: landscape) {
+  .leaderboard-column-heads,
+  .leaderboard-row { grid-template-columns: 22px minmax(44px, 1fr) 38px 27px 38px 30px; gap: 2px; padding-left: 3px; padding-right: 3px; }
+  .leaderboard-column-heads { font-size: 6px; }
+  .leaderboard-sort-btn { padding: 4px 1px; }
+  .leaderboard-pb strong { font-size: 12px; }
+}
+@media (max-width: 420px) and (orientation: portrait) {
+  .leaderboard-column-heads,
+  .leaderboard-row { grid-template-columns: 22px minmax(58px, 1fr) 40px 30px 40px 31px; }
+}

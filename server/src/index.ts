@@ -44,6 +44,7 @@ interface Player {
   ladderRank: number;
   wins: number;
   losses: number;
+  personalBestScore: number | null;
   watchingMatchId: string | null;
   disconnectEndsAt: number | null;
   disconnectTimer: ReturnType<typeof setTimeout> | null;
@@ -563,6 +564,7 @@ function startTournament(socket: WebSocket): void {
   room.players.forEach((p) => {
     p.wins = 0;
     p.losses = 0;
+    p.personalBestScore = null;
     p.ladderRank = 1;
     p.participating = true;
     p.lateJoinPending = false;
@@ -624,6 +626,7 @@ function returnToLobby(socket: WebSocket): void {
   room.players.forEach((candidate) => {
     candidate.wins = 0;
     candidate.losses = 0;
+    candidate.personalBestScore = null;
     candidate.ladderRank = 1;
     candidate.participating = true;
     candidate.lateJoinPending = false;
@@ -1595,6 +1598,7 @@ function publicTournamentState(room: Room) {
 }
 
 function publicRoom(room: Room) {
+  refreshPersonalBests(room);
   return {
     code: room.code,
     level: room.level,
@@ -1616,6 +1620,7 @@ function publicPlayer(player: Player) {
     lane: player.ladderRank,
     wins: player.wins,
     losses: player.losses,
+    personalBestScore: player.personalBestScore,
     connected: player.isBot || player.socket?.readyState === WebSocket.OPEN,
     participating: player.participating
   };
@@ -1635,7 +1640,24 @@ function publicMatchups(room: Room) {
 function publicPlayerById(room: Room, id: string) {
   const player = findPlayer(room, id);
   if (player) return publicPlayer(player);
-  return { id, name: 'Disconnected', isHost: false, isBot: false, lane: 1, wins: 0, losses: 0, connected: false, participating: false };
+  return { id, name: 'Disconnected', isHost: false, isBot: false, lane: 1, wins: 0, losses: 0, personalBestScore: null, connected: false, participating: false };
+}
+
+function refreshPersonalBests(room: Room): void {
+  for (const match of room.matches) {
+    for (const game of match.games.values()) {
+      // A PB is an official completed 10-frame game score. Do not record a
+      // partially completed game or a Level 2/3 result until every required
+      // maths check (and therefore any timeout penalty) has been resolved.
+      if (!game.complete || game.pendingMathFrames.length) continue;
+      const player = findPlayer(room, game.playerId);
+      if (!player) continue;
+      const score = adjustedGameScore(game);
+      if (player.personalBestScore === null || score > player.personalBestScore) {
+        player.personalBestScore = score;
+      }
+    }
+  }
 }
 
 function publicMatches(room: Room) {
@@ -1702,6 +1724,7 @@ function makeBotPlayer(): Player {
     ladderRank: 1,
     wins: 0,
     losses: 0,
+    personalBestScore: null,
     watchingMatchId: null,
     disconnectEndsAt: null,
     disconnectTimer: null,
@@ -2166,6 +2189,7 @@ function makePlayer(socket: WebSocket, name: string, deviceId: string, isHost: b
     ladderRank: 1,
     wins: 0,
     losses: 0,
+    personalBestScore: null,
     watchingMatchId: null,
     disconnectEndsAt: null,
     disconnectTimer: null,

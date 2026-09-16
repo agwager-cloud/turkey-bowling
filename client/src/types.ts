@@ -9,6 +9,7 @@ export interface PlayerSummary {
   lane: number;
   wins: number;
   losses: number;
+  personalBestScore: number | null;
   connected: boolean;
   participating: boolean;
 }

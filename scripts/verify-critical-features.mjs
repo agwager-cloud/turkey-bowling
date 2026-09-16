@@ -15,8 +15,12 @@ const checks = [
   ['host participation resets matchup focus', 'client/src/scenes/MatchupScene.ts', /Host participation changes rebuild\/reassign lanes[\s\S]*laneDefaultApplied = false[\s\S]*laneScrollInitialized = false/],
   ['host OPT OUT button', 'client/src/scenes/MatchupScene.ts', /OPT OUT/],
   ['host participation network command', 'client/src/net/NetworkManager.ts', /setHostParticipation\(participating\).*set_host_participation/s],
-  ['live scoreboard includes current score and frame', 'client/src/scenes/MatchupScene.ts', /Live Scoreboard[\s\S]*leaderboard-score[\s\S]*leaderboard-frame[\s\S]*leaderboard-wins/],
-  ['live scoreboard sorts by current bowling score', 'client/src/scenes/MatchupScene.ts', /buildLiveLeaderboard[\s\S]*b\.liveScore - a\.liveScore/],
+  ['live scoreboard includes current score, frame, PB and wins', 'client/src/scenes/MatchupScene.ts', /Live Scoreboard[\s\S]*leaderboard-score[\s\S]*leaderboard-frame[\s\S]*leaderboard-pb[\s\S]*leaderboard-wins/],
+  ['live scoreboard sortable headings', 'client/src/scenes/MatchupScene.ts', /data-leaderboard-sort="score"[\s\S]*data-leaderboard-sort="pb"[\s\S]*data-leaderboard-sort="wins"/],
+  ['live scoreboard defaults to current score sort', 'client/src/scenes/MatchupScene.ts', /leaderboardSort = 'score'[\s\S]*buildLiveLeaderboard\(room, appState\.tournament, this\.leaderboardSort\)/],
+  ['PB and wins sort descending', 'client/src/scenes/MatchupScene.ts', /sortKey === 'pb'[\s\S]*b\.pbScore[\s\S]*sortKey === 'wins'[\s\S]*b\.player\.wins - a\.player\.wins/],
+  ['server exposes persistent personal best', 'server/src/index.ts', /personalBestScore[\s\S]*refreshPersonalBests[\s\S]*adjustedGameScore/],
+  ['class reset clears personal best', 'server/src/index.ts', /returnToLobby[\s\S]*personalBestScore = null/],
   ['spectator shot playback defers state rerenders', 'client/src/scenes/LiveSpectatorScene.ts', /shotPlaybackActive[\s\S]*pendingRenderState/],
   ['spectator settled rack hold', 'client/src/scenes/LiveSpectatorScene.ts', /finishSpectatorPlayback[\s\S]*setTimeout\(resolve, 700\)/],
   ['spectator result overlay persists until navigation', 'client/src/scenes/LiveSpectatorScene.ts', /renderSpectatorMatchResult[\s\S]*RETURN TO MATCHUPS/],
@@ -53,4 +57,4 @@ if (failed) {
   console.error('\nCritical Turkey Bowling regression detected. Build stopped.');
   process.exit(1);
 }
-console.log('\nCritical v0.7.33 live-scoreboard, uninterrupted spectator replay, host-focus, spectator-result, navigation and calculator keypad protections verified.');
+console.log('\nCritical v0.7.34 sortable PB scoreboard, uninterrupted spectator replay, host-focus, spectator-result, navigation and calculator keypad protections verified.');

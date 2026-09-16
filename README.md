@@ -1,6 +1,14 @@
-# Turkey Bowling v0.7.33
+# Turkey Bowling v0.7.34
 
 Turkey Bowling is a classroom multiplayer ten-pin bowling game with a live King-of-the-Court ladder, host opt-in/opt-out controls, live spectating, score verification and maths checks.
+
+
+## v0.7.34 hotfix
+- Host Live Scoreboard now includes persistent personal-best completed game score (PB).
+- SCORE, PB and WINS are clickable sort headings; all sort highest-to-lowest.
+- Current Score remains the default sort and Frame remains visible.
+- PB is authoritative server state and persists across matches until the class is reset/returned to the lobby.
+- This release includes a server change and requires a Render redeploy from GitHub.
 
 ## v0.7.33 hotfix
 

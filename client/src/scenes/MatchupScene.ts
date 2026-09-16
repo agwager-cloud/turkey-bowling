@@ -16,6 +16,7 @@ export class MatchupScene extends BaseBowlingScene {
     laneInteractionUntil = 0;
     deferredRenderTimer = 0;
     leaderboardScrollTop = 0;
+    leaderboardSort = 'score';
     managePlayersOpen = false;
     participationBusy = false;
     constructor() { super('MatchupScene'); }
@@ -28,6 +29,7 @@ export class MatchupScene extends BaseBowlingScene {
         this.laneFocusKey = '';
         this.laneRenderGeneration = 0;
         this.laneInteractionUntil = 0;
+        this.leaderboardSort = 'score';
         this.participationBusy = false;
         window.clearTimeout(this.deferredRenderTimer);
         this.deferredRenderTimer = 0;
@@ -137,7 +139,7 @@ export class MatchupScene extends BaseBowlingScene {
         // No device may spectate over its own live match. Hosts who want to teach
         // from spectator mode can use OPT OUT, then every live lane becomes watchable.
         const canWatchOtherLanes = liveBowling && !myActiveMatch;
-        const leaderboard = buildLiveLeaderboard(room, appState.tournament);
+        const leaderboard = buildLiveLeaderboard(room, appState.tournament, this.leaderboardSort);
         const liveCount = liveBowling ? (appState.tournament?.matches.filter((match) => !match.complete && Boolean(match.playerB)).length ?? 0) : 0;
         const previousTrack = this.ui.querySelector('#lane-track');
         // Do not preserve scrollLeft until the first real lane layout has been
@@ -174,7 +176,15 @@ export class MatchupScene extends BaseBowlingScene {
           </section>
 
           <aside class="match-leaderboard panel">
-            <div class="leaderboard-title-row"><h2>Live Scoreboard</h2><span>SCORE • FRAME • WINS</span></div>
+            <div class="leaderboard-title-row"><h2>Live Scoreboard</h2><span>CLICK SCORE • PB • WINS TO SORT</span></div>
+            <div class="leaderboard-column-heads" aria-label="Leaderboard columns">
+              <span class="leaderboard-head-rank">#</span>
+              <span class="leaderboard-head-player">PLAYER</span>
+              <button class="leaderboard-sort-btn${this.leaderboardSort === 'score' ? ' active' : ''}" type="button" data-leaderboard-sort="score" title="Sort by current score, highest first">SCORE${this.leaderboardSort === 'score' ? ' ▼' : ''}</button>
+              <span class="leaderboard-head-frame" title="Current frame">F</span>
+              <button class="leaderboard-sort-btn${this.leaderboardSort === 'pb' ? ' active' : ''}" type="button" data-leaderboard-sort="pb" title="Sort by personal best completed score, highest first">PB${this.leaderboardSort === 'pb' ? ' ▼' : ''}</button>
+              <button class="leaderboard-sort-btn${this.leaderboardSort === 'wins' ? ' active' : ''}" type="button" data-leaderboard-sort="wins" title="Sort by match wins, highest first">WINS${this.leaderboardSort === 'wins' ? ' ▼' : ''}</button>
+            </div>
             <div class="leaderboard-scroll-shell">
               <button id="leaderboard-up" class="leaderboard-page-btn leaderboard-page-up" type="button" aria-label="View previous leaderboard names" title="Previous leaderboard page">▲</button>
               <div id="leaderboard-list" class="leaderboard-list">
@@ -182,9 +192,10 @@ export class MatchupScene extends BaseBowlingScene {
                   <div class="leaderboard-row${entry.player.id === appState.playerId ? ' me' : ''}${entry.player.id === room.championId ? ' champion' : ''}" data-leaderboard-rank="${index + 1}">
                     <span class="leaderboard-pos">${entry.player.id === room.championId ? '👑' : index + 1}</span>
                     <span class="leaderboard-name" title="${escapeHtml(entry.player.name)}">${escapeHtml(entry.player.name)}</span>
-                    <span class="leaderboard-metric leaderboard-score" title="Current bowling score"><small>S</small><strong>${entry.scoreLabel}</strong></span>
-                    <span class="leaderboard-metric leaderboard-frame" title="Current frame"><small>F</small><strong>${entry.frameLabel}</strong></span>
-                    <span class="leaderboard-metric leaderboard-wins" title="Match wins"><small>W</small><strong>${entry.player.wins}</strong></span>
+                    <span class="leaderboard-metric leaderboard-score" title="Current bowling score"><strong>${entry.scoreLabel}</strong></span>
+                    <span class="leaderboard-metric leaderboard-frame" title="Current frame"><strong>${entry.frameLabel}</strong></span>
+                    <span class="leaderboard-metric leaderboard-pb" title="Personal best completed game"><strong>${entry.pbLabel}</strong></span>
+                    <span class="leaderboard-metric leaderboard-wins" title="Match wins"><strong>${entry.player.wins}</strong></span>
                   </div>`).join('')}
               </div>
               <div id="leaderboard-range" class="leaderboard-range" aria-live="polite">${leaderboard.length ? `1–${Math.min(leaderboard.length, 1)} of ${leaderboard.length}` : '0 of 0'}</div>
@@ -265,9 +276,24 @@ export class MatchupScene extends BaseBowlingScene {
             card.addEventListener('click', () => this.scene.start('BowlingScene'));
         });
         this.setupLaneNavigation(isHost);
+        this.setupLeaderboardSort();
         this.setupLeaderboardNavigation();
         this.setupManagePlayersOverlay();
         this.updateCountdown();
+    }
+    setupLeaderboardSort() {
+        if (!this.ui)
+            return;
+        this.ui.querySelectorAll('[data-leaderboard-sort]').forEach((button) => {
+            button.addEventListener('click', () => {
+                const nextSort = button.dataset.leaderboardSort;
+                if (!['score', 'pb', 'wins'].includes(nextSort))
+                    return;
+                this.leaderboardSort = nextSort;
+                this.leaderboardScrollTop = 0;
+                this.render();
+            });
+        });
     }
     setupManagePlayersOverlay() {
         if (!this.ui || !this.managePlayersOpen)
@@ -568,7 +594,7 @@ function renderLaneCard(match, live, isHost, canWatchOtherLanes) {
     </div>
   </article>`;
 }
-function buildLiveLeaderboard(room, tournament) {
+function buildLiveLeaderboard(room, tournament, sortKey = 'score') {
     const matches = tournament?.matches ?? [];
     const entries = room.players.map((player) => {
         const match = matches
@@ -576,29 +602,50 @@ function buildLiveLeaderboard(room, tournament) {
             .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))[0];
         const game = match?.games?.find((candidate) => candidate.playerId === player.id);
         const liveScore = currentVisibleScore(game);
+        const pbScore = player.personalBestScore !== null && player.personalBestScore !== undefined && Number.isFinite(Number(player.personalBestScore))
+            ? Math.max(0, Math.trunc(Number(player.personalBestScore)))
+            : null;
         const inactive = player.participating === false;
         const bye = Boolean(match && !match.playerB);
         return {
             player,
             liveScore,
+            pbScore,
             liveFrame: game ? Math.max(1, Math.min(10, Number(game.currentFrame) || 1)) : 0,
             scoreLabel: inactive ? '—' : game ? String(liveScore) : bye ? 'BYE' : '—',
-            frameLabel: inactive ? '—' : game ? String(Math.max(1, Math.min(10, Number(game.currentFrame) || 1))) : bye ? 'BYE' : '—'
+            frameLabel: inactive ? '—' : game ? String(Math.max(1, Math.min(10, Number(game.currentFrame) || 1))) : bye ? 'BYE' : '—',
+            pbLabel: pbScore === null ? '—' : String(pbScore)
         };
     });
     return entries.sort((a, b) => {
-        // The host needs an at-a-glance live class ranking, so current bowling
-        // score is the primary order while a round is in progress. Wins remain
-        // visible and act as a sensible tie-breaker before anyone has bowled.
+        const nameOrder = () => a.player.name.localeCompare(b.player.name);
+        if (sortKey === 'pb') {
+            return (b.pbScore ?? -1) - (a.pbScore ?? -1)
+                || b.player.wins - a.player.wins
+                || b.liveScore - a.liveScore
+                || b.liveFrame - a.liveFrame
+                || nameOrder();
+        }
+        if (sortKey === 'wins') {
+            return b.player.wins - a.player.wins
+                || (b.pbScore ?? -1) - (a.pbScore ?? -1)
+                || b.liveScore - a.liveScore
+                || b.liveFrame - a.liveFrame
+                || nameOrder();
+        }
+        // Current Score is the default classroom view. Players with a live game
+        // rank above players currently opted out/waiting, then highest visible
+        // bowling score and furthest frame break ties.
         const aActive = a.player.participating !== false && a.liveFrame > 0;
         const bActive = b.player.participating !== false && b.liveFrame > 0;
         if (aActive !== bActive)
             return aActive ? -1 : 1;
         return b.liveScore - a.liveScore
             || b.liveFrame - a.liveFrame
+            || (b.pbScore ?? -1) - (a.pbScore ?? -1)
             || b.player.wins - a.player.wins
             || b.player.lane - a.player.lane
-            || a.player.name.localeCompare(b.player.name);
+            || nameOrder();
     });
 }
 function currentVisibleScore(game) {
