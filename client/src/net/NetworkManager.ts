@@ -102,6 +102,7 @@ class NetworkManager {
     returnToLobby() { this.send({ type: 'return_to_lobby' }); }
     shotStarted(matchId, shotId, shot) { this.send({ type: 'shot_started', matchId, shotId, shot }); }
     rollBall(matchId, shotId, knockedPins, speedKmh, gutter) { this.send({ type: 'roll_ball', matchId, shotId, knockedPins, speedKmh, gutter }); }
+    turnReady(matchId) { this.send({ type: 'turn_ready', matchId }); }
     submitScore(frameIndex, total) { this.send({ type: 'submit_score', frameIndex, total }); }
     watchMatch(matchId) { this.send({ type: 'watch_match', matchId }); }
     stopWatchingMatch() { this.send({ type: 'stop_watching_match' }); }
