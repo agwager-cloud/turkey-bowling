@@ -179,6 +179,10 @@ export class BowlingScene extends BaseBowlingScene {
         // lane remains paused until the previous bowler finishes their maths. Do
         // not expose controls or start a local countdown during that pause.
         const myTurn = !lanePaused && rawMyTurn && !mathRequired && !opponentMathRequired;
+        // The host can inspect Class Matchups during the opponent's turn, but leaving
+        // the lane while their own shot clock or score check is active is unsafe: the
+        // authoritative server timer continues even though the controls are off-screen.
+        const hostMatchupsLocked = Boolean(isHost && (myTurn || mathRequired));
         const watchingOpponent = Boolean(!lanePaused && opponent && !match.complete && !myTurn && (match.currentPlayerId === opponent.id || opponentMathRequired));
         const displayedGame = watchingOpponent ? opponentGame : myGame;
         const standingPins = match.bowlOffActive
@@ -193,7 +197,7 @@ export class BowlingScene extends BaseBowlingScene {
       <div class="bowling-shell interactive realistic-bowling-shell${match.bowlOffActive ? ' bowl-off-shell' : ''}">
         <header class="bowling-top panel">
           <div><div class="bowling-lane-title">${match.championship ? '👑 Championship Lane' : `Lane ${match.lane}`}${match.bowlOffActive ? '<span class="bowl-off-live-pill">🔥 BOWL-OFF</span>' : ''}</div></div>
-          <div class="bowling-meta"><span>LEVEL ${state.room.level}</span>${isHost ? '<button id="host-matchups" class="host-nav-btn" type="button">CLASS MATCHUPS</button><button id="host-lobby" class="host-nav-btn return-lobby-trigger" type="button">↩ LOBBY</button>' : ''}</div>
+          <div class="bowling-meta"><span>LEVEL ${state.room.level}</span>${isHost ? `<button id="host-matchups" class="host-nav-btn" type="button"${hostMatchupsLocked ? ' disabled title="Finish your active turn before opening Class Matchups"' : ''}>CLASS MATCHUPS</button><button id="host-lobby" class="host-nav-btn return-lobby-trigger" type="button">↩ LOBBY</button>` : ''}</div>
         </header>
         <main class="bowling-main realistic-bowling-main">
           <section class="score-panel panel">
@@ -291,8 +295,14 @@ export class BowlingScene extends BaseBowlingScene {
         else if (watchingOpponent) {
             this.runSpectatorShotClock(match.turnEndsAt);
         }
-        if (myTurn)
+        if (myTurn) {
+            // The authoritative 15-second clock starts only after this player's
+            // controls have actually rendered. This prevents a hidden server timer
+            // from expiring while a slower device is still finishing the opponent's
+            // bowl/transition. The server de-duplicates repeated acknowledgements.
+            network.turnReady(match.id);
             this.runShotClock(match.turnEndsAt, myGame, standingPins.length);
+        }
         if (match.complete && !this.movingToResult) {
             this.movingToResult = true;
             window.clearTimeout(this.resultTimer);
@@ -486,13 +496,17 @@ export class BowlingScene extends BaseBowlingScene {
         this.stopShotClock();
         if (!turnEndsAt || !game)
             return;
+        // armMatchShotClock initially supplies a longer server-side fail-safe while
+        // waiting for turn_ready. The player must still see and receive exactly
+        // 15 seconds from the moment their controls appear.
+        const visibleTurnEndsAt = Math.min(turnEndsAt, Date.now() + 15000);
         const update = () => {
             if (!this.ui || this.controlPhase === 'bowling' || this.controlPhase === 'awaiting_result')
                 return;
             const clock = this.ui.querySelector('#shot-clock');
             if (!clock)
                 return;
-            const remainingMs = Math.max(0, turnEndsAt - Date.now());
+            const remainingMs = Math.max(0, visibleTurnEndsAt - Date.now());
             const seconds = Math.ceil(remainingMs / 1000);
             clock.textContent = remainingMs > 0 ? `${seconds}s` : 'TIME!';
             clock.classList.toggle('urgent', seconds <= 5);
