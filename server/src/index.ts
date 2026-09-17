@@ -26,6 +26,7 @@ type ClientMessage =
   | { type: 'return_to_lobby' }
   | { type: 'shot_started'; matchId?: string; shotId?: string; shot: ShotVisualInput }
   | { type: 'roll_ball'; matchId?: string; shotId?: string; knockedPins?: number[]; speedKmh?: number; gutter?: boolean }
+  | { type: 'turn_ready'; matchId?: string }
   | { type: 'submit_score'; frameIndex: number; total: number }
   | { type: 'watch_match'; matchId: string }
   | { type: 'stop_watching_match' }
@@ -91,6 +92,10 @@ interface LaneMatch {
   bowlOffPlayerBScore: number | null;
   bowlOffHistory: BowlOffRound[];
   turnEndsAt: number | null;
+  // The client acknowledges each fresh delivery only after its lane controls are
+  // actually rendered. Until then a generous fallback prevents a hidden shot
+  // clock from scoring 0 while the device is still finishing the opponent view.
+  turnReadyKey: string | null;
   shotInMotion: boolean;
   activeShotId: string | null;
   activeSpectatorShot: ({
@@ -136,6 +141,7 @@ const PORT = Number(process.env.PORT || 8080);
 const MATCH_RESULT_HOLD_MS = 10000;
 const AUTO_MATCHUP_COUNTDOWN_MS = 5000;
 const SHOT_CLOCK_MS = 15000;
+const TURN_READY_FALLBACK_MS = 30000;
 const SHOT_RESULT_GRACE_MS = 12000;
 const LEVEL_2_MATH_MS = 20000;
 const LEVEL_3_MATH_MS = 30000;
@@ -195,6 +201,7 @@ wss.on('connection', (socket) => {
       case 'return_to_lobby': returnToLobby(socket); break;
       case 'shot_started': shotStarted(socket, message.matchId, message.shotId, message.shot); break;
       case 'roll_ball': rollBall(socket, message.matchId, message.shotId, message.knockedPins, message.speedKmh, message.gutter); break;
+      case 'turn_ready': turnReady(socket, message.matchId); break;
       case 'submit_score': submitScore(socket, message.frameIndex, message.total); break;
       case 'watch_match': watchMatch(socket, message.matchId); break;
       case 'stop_watching_match': stopWatchingMatch(socket); break;
@@ -1015,6 +1022,7 @@ function startBowlOff(match: LaneMatch): void {
   match.loserId = null;
   match.currentPlayerId = match.playerAId;
   match.turnEndsAt = null;
+  match.turnReadyKey = null;
   match.shotInMotion = false;
   match.activeShotId = null;
   match.activeSpectatorShot = null;
@@ -1053,6 +1061,7 @@ function recordBowlOffRoll(match: LaneMatch, playerId: string, pinCount: number)
   match.bowlOffPlayerBScore = null;
   match.currentPlayerId = match.bowlOffRound % 2 === 1 ? match.playerAId : match.playerBId;
   match.turnEndsAt = null;
+  match.turnReadyKey = null;
   match.shotInMotion = false;
   match.activeShotId = null;
   match.activeSpectatorShot = null;
@@ -1426,6 +1435,7 @@ function makeLaneMatch(lane: number, laneCount: number, a: Player, b: Player | n
     bowlOffPlayerBScore: null,
     bowlOffHistory: [],
     turnEndsAt: null,
+    turnReadyKey: null,
     shotInMotion: false,
     activeShotId: null,
     activeSpectatorShot: null,
@@ -1776,6 +1786,11 @@ function armMatchShotClock(room: Room, match: LaneMatch): void {
   match.shotInMotion = false;
   match.activeShotId = null;
   match.activeSpectatorShot = null;
+  // Every delivery must be acknowledged by the active player's lane UI before
+  // its real 15-second clock becomes authoritative. This closes a race where a
+  // slower client could still be finishing the opponent's animation while the
+  // server had already started counting down the player's next frame.
+  match.turnReadyKey = null;
   if (room.status !== 'bowling' || match.complete || match.disconnectedPlayerId || !match.currentPlayerId) {
     match.turnEndsAt = null;
     return;
@@ -1789,7 +1804,39 @@ function armMatchShotClock(room: Room, match: LaneMatch): void {
     match.turnEndsAt = null;
     return;
   }
-  match.turnEndsAt = player && !player.isBot ? Date.now() + SHOT_CLOCK_MS : null;
+  // Keep a fail-safe deadline so a connected-but-broken client can never stall
+  // the whole class indefinitely. A healthy client immediately sends turn_ready,
+  // which replaces this fallback with a fresh 15-second deadline.
+  match.turnEndsAt = player && !player.isBot ? Date.now() + TURN_READY_FALLBACK_MS : null;
+}
+
+function currentTurnReadyKey(match: LaneMatch, playerId: string): string {
+  if (match.bowlOffActive) {
+    return `bowl-off:${match.bowlOffRound}:${playerId}:${match.bowlOffPlayerAScore ?? 'x'}:${match.bowlOffPlayerBScore ?? 'x'}`;
+  }
+  const game = match.games.get(playerId);
+  const frame = game?.currentFrame ?? -1;
+  const ball = game?.frames[frame]?.length ?? -1;
+  return `game:${playerId}:${frame}:${ball}`;
+}
+
+function turnReady(socket: WebSocket, rawMatchId: string | undefined): void {
+  const context = getContext(socket);
+  if (!context) return;
+  const { room, player } = context;
+  if (room.status !== 'bowling') return;
+  const match = activeMatchForPlayer(room, player.id);
+  if (!match || match.complete || match.disconnectedPlayerId || match.currentPlayerId !== player.id || match.shotInMotion) return;
+  if (rawMatchId && rawMatchId !== match.id) return;
+  if (matchHasPendingMath(match)) return;
+
+  const readyKey = currentTurnReadyKey(match, player.id);
+  if (match.turnReadyKey === readyKey) return;
+
+  match.turnReadyKey = readyKey;
+  match.turnEndsAt = Date.now() + SHOT_CLOCK_MS;
+  broadcastBowling(room, 'bowling_state');
+  scheduleTurnTimeout(room);
 }
 
 function scheduleTurnTimeout(room: Room): void {
@@ -1960,6 +2007,7 @@ function pauseMatchForDisconnect(room: Room, match: LaneMatch, player: Player): 
   match.reconnectEndsAt = now + DISCONNECT_GRACE_MS;
   match.pausedTurnRemainingMs = match.turnEndsAt ? Math.max(0, match.turnEndsAt - now) : null;
   match.turnEndsAt = null;
+  match.turnReadyKey = null;
   // A released bowl is not committed until roll_ball arrives. If the connection
   // drops mid-animation, preserve the score/pins and let that delivery be replayed
   // after reconnect rather than turning a network fault into a zero-pin result.
@@ -2013,8 +2061,9 @@ function reconnectPlayer(room: Room, player: Player, socket: WebSocket): void {
     }
     if (!matchHasPendingMath(match) && match.currentPlayerId) {
       const current = findPlayer(room, match.currentPlayerId);
+      match.turnReadyKey = null;
       match.turnEndsAt = current && !current.isBot
-        ? now + Math.max(250, match.pausedTurnRemainingMs ?? SHOT_CLOCK_MS)
+        ? now + TURN_READY_FALLBACK_MS
         : null;
     }
     match.pausedTurnRemainingMs = null;
