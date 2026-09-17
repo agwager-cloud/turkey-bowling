@@ -1,7 +1,7 @@
 {
   "name": "turkey-bowling-client",
   "private": true,
-  "version": "0.7.35",
+  "version": "0.7.37",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5173",
