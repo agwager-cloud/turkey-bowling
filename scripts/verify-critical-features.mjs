@@ -15,6 +15,9 @@ const checks = [
   ['host participation resets matchup focus', 'client/src/scenes/MatchupScene.ts', /Host participation changes rebuild\/reassign lanes[\s\S]*laneDefaultApplied = false[\s\S]*laneScrollInitialized = false/],
   ['host OPT OUT button', 'client/src/scenes/MatchupScene.ts', /OPT OUT/],
   ['host participation network command', 'client/src/net/NetworkManager.ts', /setHostParticipation\(participating\).*set_host_participation/s],
+  ['host active turn auto-returns from Matchups', 'client/src/scenes/MatchupScene.ts', /hostMustReturn[\s\S]*hostNeedsOwnLaneNow[\s\S]*scene\.start\('BowlingScene'\)/],
+  ['host cannot open Matchups during active turn', 'client/src/scenes/BowlingScene.ts', /hostMatchupsLocked[\s\S]*Finish your active turn before opening Class Matchups/],
+  ['Matchups errors are non-blocking', 'client/src/scenes/MatchupScene.ts', /network\.on\('error'[\s\S]*showToast\(message\)/],
   ['live scoreboard includes current score, frame, PB and wins', 'client/src/scenes/MatchupScene.ts', /Live Scoreboard[\s\S]*leaderboard-score[\s\S]*leaderboard-frame[\s\S]*leaderboard-pb[\s\S]*leaderboard-wins/],
   ['live scoreboard sortable headings', 'client/src/scenes/MatchupScene.ts', /data-leaderboard-sort="score"[\s\S]*data-leaderboard-sort="pb"[\s\S]*data-leaderboard-sort="wins"/],
   ['live scoreboard defaults to current score sort', 'client/src/scenes/MatchupScene.ts', /leaderboardSort = 'score'[\s\S]*buildLiveLeaderboard\(room, appState\.tournament, this\.leaderboardSort\)/],
@@ -39,6 +42,11 @@ const checks = [
   ['rare bad-bowl 7-10 gate', 'client/src/game/BowlingSimulator.ts', /genuinelyBadStraight.*sevenTenChance/s],
   ['fallen-pin messenger sweep', 'client/src/game/BowlingSimulator.ts', /collideFallenPinSweeps/],
   ['server shot ID guard', 'server/src/index.ts', /activeShotId.*rawShotId/s],
+  ['turn-ready client command', 'client/src/net/NetworkManager.ts', /turnReady\(matchId\).*turn_ready/s],
+  ['lane sends ready only after player controls render', 'client/src/scenes/BowlingScene.ts', /network\.turnReady\(match\.id\)[\s\S]*runShotClock/],
+  ['visible player clock starts from rendered controls', 'client/src/scenes/BowlingScene.ts', /visibleTurnEndsAt = Math\.min\(turnEndsAt, Date\.now\(\) \+ 15000\)/],
+  ['server turn-ready acknowledgement', 'server/src/index.ts', /function turnReady[\s\S]*turnReadyKey[\s\S]*Date\.now\(\) \+ SHOT_CLOCK_MS/],
+  ['server hidden-turn fallback protection', 'server/src/index.ts', /TURN_READY_FALLBACK_MS = 30000[\s\S]*turnReadyKey = null[\s\S]*TURN_READY_FALLBACK_MS/],
   ['server host participation handler', 'server/src/index.ts', /setHostParticipation/]
 ];
 let failed = false;
@@ -57,4 +65,4 @@ if (failed) {
   console.error('\nCritical Turkey Bowling regression detected. Build stopped.');
   process.exit(1);
 }
-console.log('\nCritical v0.7.35 scoreboard layout, sortable PB scoreboard, uninterrupted spectator replay, host-focus, spectator-result, navigation and calculator keypad protections verified.');
+console.log('\nCritical v0.7.37 rendered-turn handshake, host-turn safety, scoreboard layout, sortable PB scoreboard, uninterrupted spectator replay, host-focus, spectator-result, navigation and calculator keypad protections verified.');
