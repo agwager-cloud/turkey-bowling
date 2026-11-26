@@ -1,0 +1,16 @@
+# Turkey Bowling on the home server. Listens only on this machine; the Cloudflare Tunnel
+# sends turkey-bowling.pifractal.com here.
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: home-server/Dockerfile
+    container_name: game-turkey-bowling
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8344:3000"
+    mem_limit: 512m
+    logging:
+      options:
+        max-size: "5m"
+        max-file: "2"
